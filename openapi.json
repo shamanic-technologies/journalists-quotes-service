@@ -1,0 +1,720 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Journalists Quotes Service",
+    "description": "Automates expert-quote outreach via Featured.com Premium API. One run = sync questions, score against brand context, pick top 1, generate pitch, submit answer.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3050"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key"
+      }
+    },
+    "schemas": {
+      "ExpertQuoteRunResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "submitted",
+              "no_match",
+              "rate_limited",
+              "error"
+            ]
+          },
+          "quoteRequestId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "pitchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "retryAfter": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "ExpertQuoteRunRequest": {
+        "type": "object",
+        "properties": {
+          "campaignId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "brandId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "campaignId",
+          "brandId"
+        ]
+      },
+      "QuoteRequest": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "featuredQuestionId": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "mediaOutlet": {
+            "type": "string",
+            "nullable": true
+          },
+          "opportunityText": {
+            "type": "string"
+          },
+          "pitchUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "deadline": {
+            "type": "string",
+            "nullable": true
+          },
+          "fetchedAt": {
+            "type": "string"
+          },
+          "orgId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "featuredQuestionId",
+          "source",
+          "mediaOutlet",
+          "opportunityText",
+          "pitchUrl",
+          "deadline",
+          "fetchedAt",
+          "orgId",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "QuoteRequestStats": {
+        "type": "object",
+        "properties": {
+          "totalRequests": {
+            "type": "integer"
+          },
+          "totalPitched": {
+            "type": "integer"
+          },
+          "totalSelected": {
+            "type": "integer"
+          },
+          "totalPublished": {
+            "type": "integer"
+          },
+          "totalNotSelected": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "totalRequests",
+          "totalPitched",
+          "totalSelected",
+          "totalPublished",
+          "totalNotSelected"
+        ]
+      },
+      "QuotePitch": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "quoteRequestId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "featuredQuestionId": {
+            "type": "integer"
+          },
+          "featuredProfileId": {
+            "type": "integer"
+          },
+          "campaignId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "brandId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "draft": {
+            "type": "string"
+          },
+          "submittedAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "drafted",
+              "submitted",
+              "selected",
+              "published",
+              "not_selected",
+              "error"
+            ]
+          },
+          "featuredArticleUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "error": {
+            "type": "string",
+            "nullable": true
+          },
+          "parentRunId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "runId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "orgId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "quoteRequestId",
+          "featuredQuestionId",
+          "featuredProfileId",
+          "campaignId",
+          "brandId",
+          "draft",
+          "submittedAt",
+          "status",
+          "featuredArticleUrl",
+          "error",
+          "parentRunId",
+          "runId",
+          "orgId",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "SyncTrackingResponse": {
+        "type": "object",
+        "properties": {
+          "selectedUpdated": {
+            "type": "integer"
+          },
+          "publishedUpdated": {
+            "type": "integer"
+          },
+          "notSelectedUpdated": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "selectedUpdated",
+          "publishedUpdated",
+          "notSelectedUpdated"
+        ]
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health check",
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string"
+                    },
+                    "service": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "timestamp",
+                    "service"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/expert-quote-runs": {
+      "post": {
+        "summary": "Run one full expert-quote loop for the given campaign+brand",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-org-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExpertQuoteRunRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Run result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExpertQuoteRunResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream service unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/quote-requests": {
+      "get": {
+        "summary": "List quote requests for the org",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": false,
+            "name": "campaign_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "source",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "offset",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-org-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of quote requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "quoteRequests": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/QuoteRequest"
+                      }
+                    }
+                  },
+                  "required": [
+                    "quoteRequests"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/quote-requests/stats": {
+      "get": {
+        "summary": "Aggregate stats for quote requests + pitches",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": false,
+            "name": "campaign_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-org-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stats",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuoteRequestStats"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/quote-requests/{id}": {
+      "get": {
+        "summary": "Get a single quote request",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-org-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Quote request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "quoteRequest": {
+                      "$ref": "#/components/schemas/QuoteRequest"
+                    }
+                  },
+                  "required": [
+                    "quoteRequest"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/quote-pitches": {
+      "get": {
+        "summary": "List quote pitches for the org",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": false,
+            "name": "campaign_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "drafted",
+                "submitted",
+                "selected",
+                "published",
+                "not_selected",
+                "error"
+              ]
+            },
+            "required": false,
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "offset",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-org-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of quote pitches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "quotePitches": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/QuotePitch"
+                      }
+                    }
+                  },
+                  "required": [
+                    "quotePitches"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/quote-pitches/{id}": {
+      "get": {
+        "summary": "Get a single quote pitch",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-org-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Quote pitch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "quotePitch": {
+                      "$ref": "#/components/schemas/QuotePitch"
+                    }
+                  },
+                  "required": [
+                    "quotePitch"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/sync-tracking": {
+      "post": {
+        "summary": "Poll Featured /selected /published /not-selected and reconcile",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sync results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncTrackingResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
