@@ -48,8 +48,8 @@ The server boots on `PORT` (default `3050`) and runs Drizzle migrations automati
 | `GET` | `/health` | Public | Liveness |
 | `GET` | `/openapi.json` | Public | OpenAPI 3 spec |
 | `POST` | `/orgs/expert-quote-runs` | apiKey + orgId | Run one full loop for `{ campaignId, brandId }` |
-| `GET` | `/orgs/quote-requests` | apiKey + orgId | List sourced opportunities |
-| `GET` | `/orgs/quote-requests/:id` | apiKey + orgId | Single request |
+| `GET` | `/orgs/quote-requests` | apiKey + orgId | List provider quote requests (filter by `?provider=` and `?ingestion_channel=`); response key `providerQuoteRequests` |
+| `GET` | `/orgs/quote-requests/:id` | apiKey + orgId | Single provider quote request |
 | `GET` | `/orgs/quote-requests/stats` | apiKey + orgId | Aggregate counts |
 | `GET` | `/orgs/quote-pitches` | apiKey + orgId | List pitches |
 | `GET` | `/orgs/quote-pitches/:id` | apiKey + orgId | Single pitch |
@@ -90,16 +90,30 @@ These mark integration points blocked on parallel tasks:
 
 Remove each fallback once the corresponding upstream lands.
 
+## Multi-source schema (0001 migration)
+
+Phase 1 introduces a 4-layer model so the service can ingest opportunities from email-only providers (HARO, Source of Sources, Qwoted email digest, SourceBottle, Help-a-B2B-Writer, ResponseSource, ProfNet) alongside the existing Featured.com Premium API:
+
+| Layer | Table | Purpose |
+|-------|-------|---------|
+| Bronze | `inbound_emails` | raw Postmark inbound payloads, deduped on `message_id`, parsed asynchronously |
+| Silver | `provider_quote_requests` | one row per provider ingestion (ex `quote_requests`); unique on `(provider, ingestion_channel, external_id)` |
+| Gold | `quote_opportunities` | global cluster of duplicate provider rows = one journalist demand; unique on `fingerprint` |
+| Pitch | `quote_pitches` | response we send; `delivery_method` = `featured_api` or `email_reply`; partial unique `(quote_opportunity_id, brand_id)` excluding `status='error'` |
+
+Legacy rows are backfilled (`provider='featured'`, `ingestion_channel='api'`, `external_id=featured_question_id::text`, `delivery_method='featured_api'`). Cluster assignment, parsers, dispatcher modes, and the new endpoint split land in subsequent PRs.
+
 ## Out of scope (handled elsewhere)
 
 - key-service `featured` provider registration
 - chat-service `/orgs/rag/score` implementation
+- chat-service `/orgs/rag/embed` (phase 1.5 fuzzy dedup, separate workspace)
 - content-generation-service `expert-quote-pitch` template
 - features-service `pr-expert-quote-outreach` registration
 - workflow-service workflow definition
 - distribute.you dashboard UI
-- Email-based ingestion (HARO / SOS / Qwoted) — no current plan
-- Webhooks — Featured does not expose any
+- email-gateway-service inbound forwarding + threading fields (separate workspace)
+- Postmark direct integration — proxied via email-gateway-service
 - Cron / scheduling — workflow-service handles
 
 ## Tests
