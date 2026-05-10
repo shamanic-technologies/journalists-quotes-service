@@ -1,4 +1,8 @@
 import * as Sentry from "@sentry/node";
+// Patches Express 4 Router so async route throws/rejections propagate to the
+// error middleware instead of becoming unhandledRejections that crash the
+// process. Must be imported before any Router is created.
+import "express-async-errors";
 import express from "express";
 import cors from "cors";
 import { readFileSync, existsSync } from "fs";
