@@ -21,6 +21,10 @@ export const pitchStatusEnum = pgEnum("pitch_status", [
   "published",
   "not_selected",
   "error",
+  "length_violation",
+  "template_missing",
+  "brand_missing_fields",
+  "insufficient_credits",
 ]);
 
 export const processingStatusEnum = pgEnum("processing_status", [
@@ -220,7 +224,10 @@ export const quotePitches = pgTable(
     featuredProfileId: integer("featured_profile_id"),
     campaignId: uuid("campaign_id").notNull(),
     brandId: uuid("brand_id").notNull(),
-    draft: text("draft").notNull(),
+    draft: text("draft"),
+    pitchCharCount: integer("pitch_char_count"),
+    pitchAttempts: integer("pitch_attempts"),
+    contentGenRunId: uuid("content_gen_run_id"),
     submittedAt: timestamp("submitted_at", { withTimezone: true }),
     status: pitchStatusEnum("status").notNull().default("drafted"),
     deliveryMethod: deliveryMethodEnum("delivery_method").notNull(),
@@ -230,6 +237,7 @@ export const quotePitches = pgTable(
     bounceStatus: text("bounce_status"),
     featuredArticleUrl: text("featured_article_url"),
     error: text("error"),
+    errorDetails: jsonb("error_details"),
     parentRunId: uuid("parent_run_id"),
     runId: uuid("run_id"),
     orgId: uuid("org_id").notNull(),

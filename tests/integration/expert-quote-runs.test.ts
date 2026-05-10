@@ -45,6 +45,25 @@ vi.mock("../../src/lib/brand-client.js", () => ({
     permanentUrl: `http://cdn.test/logo-${brandId}.png`,
     category: "logo",
   })),
+  extractBrandFields: vi.fn(async (brandId: string) => ({
+    brands: [
+      {
+        brandId,
+        domain: "test.com",
+        name: "Test Brand",
+        brandUrl: "https://test.com",
+      },
+    ],
+    fields: {
+      industry: { value: "AI in healthcare", byBrand: {} },
+      expertise: {
+        value: "Clinical AI deployment and patient-data privacy",
+        byBrand: {},
+      },
+      voice: { value: "plainspoken, evidence-led", byBrand: {} },
+      targetAudience: { value: "Hospital CIOs and CTOs", byBrand: {} },
+    },
+  })),
 }));
 
 vi.mock("../../src/lib/chat-client.js", () => ({
@@ -57,11 +76,22 @@ vi.mock("../../src/lib/chat-client.js", () => ({
   })),
 }));
 
-vi.mock("../../src/lib/content-generation-client.js", () => ({
-  generatePitch: vi.fn(async () => ({
-    content: "P".repeat(150),
-  })),
-}));
+vi.mock("../../src/lib/content-generation-client.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../src/lib/content-generation-client.js")
+  >("../../src/lib/content-generation-client.js");
+  return {
+    ...actual,
+    generateExpertQuotePitch: vi.fn(async () => ({
+      pitch: "P".repeat(150),
+      charCount: 150,
+      attempts: 1,
+      tokensInput: 100,
+      tokensOutput: 50,
+      contentGenRunId: "00000000-0000-0000-0000-0000000000ee",
+    })),
+  };
+});
 
 const fetchLogoBytes = vi.fn(async () => ({
   bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xe0]),
@@ -112,7 +142,7 @@ describe("POST /orgs/expert-quote-runs", () => {
     await closeDb();
   });
 
-  it("happy path returns submitted with quoteRequestId + pitchId", async () => {
+  it("happy path returns submitted with quoteRequestId + pitchId and persists pitch metadata", async () => {
     const app = makeApp();
     const res = await request(app)
       .post("/orgs/expert-quote-runs")
@@ -129,6 +159,15 @@ describe("POST /orgs/expert-quote-runs", () => {
     const profiles = await db.select().from(featuredProfiles);
     expect(profiles).toHaveLength(1);
     expect(profiles[0].orgId).toBe(TEST_ORG_A);
+
+    const [pitch] = await db.select().from(quotePitches);
+    expect(pitch.status).toBe("submitted");
+    expect(pitch.draft).toBe("P".repeat(150));
+    expect(pitch.pitchCharCount).toBe(150);
+    expect(pitch.pitchAttempts).toBe(1);
+    expect(pitch.contentGenRunId).toBe(
+      "00000000-0000-0000-0000-0000000000ee"
+    );
   });
 
   it("returns no_match when nothing scores above threshold", async () => {
@@ -275,6 +314,180 @@ describe("POST /orgs/expert-quote-runs", () => {
       .get("/orgs/quote-requests")
       .set(AUTH_HEADERS_ORG_B);
     expect(orgBList.body.providerQuoteRequests).toEqual([]);
+  });
+
+  it("400 length-violation from content-gen persists status=length_violation, no Featured submit", async () => {
+    const { generateExpertQuotePitch } = await import(
+      "../../src/lib/content-generation-client.js"
+    );
+    const { ContentGenLengthError } = await import(
+      "../../src/lib/content-generation-client.js"
+    );
+    (generateExpertQuotePitch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async () => {
+        throw new ContentGenLengthError(
+          42,
+          100,
+          2500,
+          2,
+          "pitch length 42 outside [100, 2500] after 2 attempts",
+          { error: "len" }
+        );
+      }
+    );
+
+    const app = makeApp();
+    const res = await request(app)
+      .post("/orgs/expert-quote-runs")
+      .set(AUTH_HEADERS)
+      .send({ campaignId: TEST_CAMPAIGN_A, brandId: TEST_BRAND });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("error");
+    expect(res.body.pitchId).toBeDefined();
+    expect(state.submitted).toHaveLength(0);
+
+    const [pitch] = await db.select().from(quotePitches);
+    expect(pitch.status).toBe("length_violation");
+    expect(pitch.pitchCharCount).toBe(42);
+    expect(pitch.pitchAttempts).toBe(2);
+    expect(pitch.draft).toBeNull();
+    expect((pitch.errorDetails as { minChars: number }).minChars).toBe(100);
+  });
+
+  it("404 template-missing persists status=template_missing, surfaces 424", async () => {
+    const { generateExpertQuotePitch, ContentGenTemplateMissingError } =
+      await import("../../src/lib/content-generation-client.js");
+    (generateExpertQuotePitch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async () => {
+        throw new ContentGenTemplateMissingError(
+          "No prompt found for type=expert-quote-pitch",
+          { error: "missing" }
+        );
+      }
+    );
+
+    const app = makeApp();
+    const res = await request(app)
+      .post("/orgs/expert-quote-runs")
+      .set(AUTH_HEADERS)
+      .send({ campaignId: TEST_CAMPAIGN_A, brandId: TEST_BRAND });
+
+    expect(res.status).toBe(424);
+    expect(res.body.status).toBe("error");
+    expect(state.submitted).toHaveLength(0);
+
+    const [pitch] = await db.select().from(quotePitches);
+    expect(pitch.status).toBe("template_missing");
+    expect(pitch.draft).toBeNull();
+  });
+
+  it("402 insufficient credits persists status=insufficient_credits, propagates 402", async () => {
+    const { generateExpertQuotePitch, ContentGenInsufficientCreditsError } =
+      await import("../../src/lib/content-generation-client.js");
+    (generateExpertQuotePitch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async () => {
+        throw new ContentGenInsufficientCreditsError(
+          "Insufficient credits",
+          {},
+          50,
+          200
+        );
+      }
+    );
+
+    const app = makeApp();
+    const res = await request(app)
+      .post("/orgs/expert-quote-runs")
+      .set(AUTH_HEADERS)
+      .send({ campaignId: TEST_CAMPAIGN_A, brandId: TEST_BRAND });
+
+    expect(res.status).toBe(402);
+    expect(res.body.balance_cents).toBe(50);
+    expect(res.body.required_cents).toBe(200);
+    expect(state.submitted).toHaveLength(0);
+
+    const [pitch] = await db.select().from(quotePitches);
+    expect(pitch.status).toBe("insufficient_credits");
+  });
+
+  it("brand-service missing required fields persists status=brand_missing_fields and fails loud", async () => {
+    const { extractBrandFields } = await import(
+      "../../src/lib/brand-client.js"
+    );
+    (extractBrandFields as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async (brandId: string) => ({
+        brands: [
+          {
+            brandId,
+            domain: "test.com",
+            name: "Test Brand",
+            brandUrl: "https://test.com",
+          },
+        ],
+        fields: {
+          industry: { value: "AI", byBrand: {} },
+          // expertise missing
+          voice: { value: "plain", byBrand: {} },
+          targetAudience: { value: "CIOs", byBrand: {} },
+        },
+      })
+    );
+
+    const app = makeApp();
+    const res = await request(app)
+      .post("/orgs/expert-quote-runs")
+      .set(AUTH_HEADERS)
+      .send({ campaignId: TEST_CAMPAIGN_A, brandId: TEST_BRAND });
+
+    expect(res.status).toBe(424);
+    expect(res.body.status).toBe("error");
+    expect(res.body.missing).toContain("expertise");
+    expect(state.submitted).toHaveLength(0);
+
+    const [pitch] = await db.select().from(quotePitches);
+    expect(pitch.status).toBe("brand_missing_fields");
+    expect(pitch.draft).toBeNull();
+  });
+
+  it("forwards identity headers + structured brand body to content-generation-service", async () => {
+    const { generateExpertQuotePitch } = await import(
+      "../../src/lib/content-generation-client.js"
+    );
+    (generateExpertQuotePitch as ReturnType<typeof vi.fn>).mockClear();
+
+    const app = makeApp();
+    const res = await request(app)
+      .post("/orgs/expert-quote-runs")
+      .set({
+        ...AUTH_HEADERS,
+        "x-workflow-slug": "expert-quote-flow",
+        "x-feature-slug": "journalist-quotes",
+      })
+      .send({ campaignId: TEST_CAMPAIGN_A, brandId: TEST_BRAND });
+
+    expect(res.status).toBe(200);
+    expect(generateExpertQuotePitch).toHaveBeenCalledTimes(1);
+    const [body, identity] = (
+      generateExpertQuotePitch as ReturnType<typeof vi.fn>
+    ).mock.calls[0];
+    expect(body.brand).toMatchObject({
+      name: "Test Brand",
+      industry: "AI in healthcare",
+      expertise: "Clinical AI deployment and patient-data privacy",
+      voice: "plainspoken, evidence-led",
+      targetAudience: "Hospital CIOs and CTOs",
+    });
+    expect(body.request.question).toMatch(/AI in healthcare/);
+    expect(body.workflowSlug).toBe("expert-quote-flow");
+    expect(body.featureSlug).toBe("journalist-quotes");
+    expect(identity.orgId).toBe(TEST_ORG_A);
+    expect(identity.userId).toBeTruthy();
+    expect(identity.runId).toBeTruthy();
+    expect(identity.brandId).toBe(TEST_BRAND);
+    expect(identity.campaignId).toBe(TEST_CAMPAIGN_A);
+    expect(identity.workflowSlug).toBe("expert-quote-flow");
+    expect(identity.featureSlug).toBe("journalist-quotes");
   });
 
   it("persists parent_run_id and run_id on quote_pitches", async () => {

@@ -59,10 +59,12 @@ The server boots on `PORT` (default `3050`) and runs Drizzle migrations automati
 
 `POST /orgs/expert-quote-runs` returns one of:
 
-- `{ status: "submitted", quoteRequestId, pitchId }`
-- `{ status: "no_match" }`
-- `{ status: "rate_limited", retryAfter }`
-- `{ status: "error", error, pitchId, quoteRequestId }`
+- `200 { status: "submitted", quoteRequestId, pitchId }`
+- `200 { status: "no_match" }`
+- `200 { status: "rate_limited", retryAfter }`
+- `200 { status: "error", error, pitchId, quoteRequestId }` — Featured submit error or content-generation length-violation (pitch row persisted with status `error` or `length_violation`).
+- `402 { status: "error", error, balance_cents, required_cents, pitchId, quoteRequestId }` — content-generation-service insufficient credits (pitch row persisted with status `insufficient_credits`).
+- `424 { status: "error", error, missing?, pitchId, quoteRequestId }` — required precondition failed: brand-service returned missing required fields (`brand_missing_fields`) or content-generation-service template missing (`template_missing`).
 
 ## Featured.com integration
 
@@ -88,9 +90,24 @@ These mark integration points blocked on parallel tasks:
 
 - `key-service-client.getFeaturedCredentials`: TODO(featured-key-provider) — falls back to `FEATURED_USERNAME` / `FEATURED_PASSWORD` env vars when key-service returns 404 or is unset.
 - `chat-client.ragScore`: TODO(rag-endpoint) — falls back to recency-based scoring when chat-service `/orgs/rag/score` returns 404 or is unset.
-- `content-generation-client.generatePitch`: TODO(pitch-template) — falls back to a placeholder pitch when `expert-quote-pitch` template is missing.
 
 Remove each fallback once the corresponding upstream lands.
+
+## Pitch generation
+
+`POST /orgs/expert-quote-runs` calls `content-generation-service` `POST /generate-expert-quote-pitch` once the top-scoring opportunity is selected. No fallback — if generation fails, the pitch row is persisted with a distinct error status (no silent drop):
+
+| Upstream signal | Persisted `status` | HTTP returned |
+|-----------------|--------------------|--------------|
+| `200` | `submitted` (after Featured submit) or `error` (Featured failed) | `200` |
+| `400 ExpertQuotePitchLengthErrorResponse` | `length_violation` | `200` (status=error) |
+| `402` | `insufficient_credits` | `402` |
+| `404` (template missing) | `template_missing` | `424` |
+| brand-service missing required fields | `brand_missing_fields` | `424` |
+
+Brand fields hydrated via brand-service `POST /orgs/brands/extract-fields`: `industry`, `expertise`, `voice`, `targetAudience` — caller passes `brandId`, missing fields fail loud (no silent fallback). Brand `name` comes from brand-service metadata. All identity headers (`x-org-id`, `x-user-id`, `x-run-id`, `x-brand-id`, `x-campaign-id`, `x-workflow-slug`, `x-feature-slug`) forwarded to content-generation-service.
+
+`quote_pitches` rows record `pitch_char_count`, `pitch_attempts`, and `content_gen_run_id` for traceability into runs-service.
 
 ## Multi-source schema (0001 migration)
 
