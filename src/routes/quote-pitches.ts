@@ -14,8 +14,6 @@ router.get("/orgs/quote-pitches", async (req, res) => {
   }
   const orgId = req.orgId!;
   const { campaign_id, status, limit, offset } = parsed.data;
-  const limitN = limit ? Number(limit) : 100;
-  const offsetN = offset ? Number(offset) : 0;
 
   const conditions = [eq(quotePitches.orgId, orgId)];
   if (campaign_id) conditions.push(eq(quotePitches.campaignId, campaign_id));
@@ -26,13 +24,18 @@ router.get("/orgs/quote-pitches", async (req, res) => {
     .from(quotePitches)
     .where(and(...conditions))
     .orderBy(desc(quotePitches.createdAt))
-    .limit(limitN)
-    .offset(offsetN);
+    .limit(limit)
+    .offset(offset);
 
   res.json({ quotePitches: rows });
 });
 
 router.get("/orgs/quote-pitches/:id", async (req, res) => {
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!UUID_RE.test(req.params.id)) {
+    res.status(400).json({ error: "id must be a valid UUID" });
+    return;
+  }
   const orgId = req.orgId!;
   const { id } = req.params;
   const [row] = await db

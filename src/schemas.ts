@@ -39,8 +39,8 @@ export const QuoteRequestSchema = z
 export const QuoteRequestListQuerySchema = z.object({
   campaign_id: z.string().uuid().optional(),
   source: z.string().optional(),
-  limit: z.string().optional(),
-  offset: z.string().optional(),
+  limit: z.string().default("100").transform(Number).pipe(z.number().int().min(1).max(1000)),
+  offset: z.string().default("0").transform(Number).pipe(z.number().int().min(0)),
 });
 
 export const QuoteRequestStatsSchema = z
@@ -95,8 +95,8 @@ export const QuotePitchListQuerySchema = z.object({
       "error",
     ])
     .optional(),
-  limit: z.string().optional(),
-  offset: z.string().optional(),
+  limit: z.string().default("100").transform(Number).pipe(z.number().int().min(1).max(1000)),
+  offset: z.string().default("0").transform(Number).pipe(z.number().int().min(0)),
 });
 
 // ==================== Expert Quote Run Schemas ====================

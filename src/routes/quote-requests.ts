@@ -55,8 +55,6 @@ router.get("/orgs/quote-requests", async (req, res) => {
   }
   const orgId = req.orgId!;
   const { source, limit, offset } = parsed.data;
-  const limitN = limit ? Number(limit) : 100;
-  const offsetN = offset ? Number(offset) : 0;
 
   const conditions = [eq(quoteRequests.orgId, orgId)];
   if (source) conditions.push(eq(quoteRequests.source, source));
@@ -66,13 +64,18 @@ router.get("/orgs/quote-requests", async (req, res) => {
     .from(quoteRequests)
     .where(and(...conditions))
     .orderBy(desc(quoteRequests.fetchedAt))
-    .limit(limitN)
-    .offset(offsetN);
+    .limit(limit)
+    .offset(offset);
 
   res.json({ quoteRequests: rows });
 });
 
 router.get("/orgs/quote-requests/:id", async (req, res) => {
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!UUID_RE.test(req.params.id)) {
+    res.status(400).json({ error: "id must be a valid UUID" });
+    return;
+  }
   const orgId = req.orgId!;
   const { id } = req.params;
   const [row] = await db

@@ -5,7 +5,7 @@ if (process.env.SENTRY_DSN) {
     dsn: process.env.SENTRY_DSN,
     environment: process.env.NODE_ENV || "development",
     tracesSampleRate: 0.1,
-    sendDefaultPii: true,
+    sendDefaultPii: false,
     registerEsmLoaderHooks: {
       exclude: [/drizzle-orm/],
     },
