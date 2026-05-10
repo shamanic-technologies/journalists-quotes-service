@@ -25,7 +25,12 @@ export interface BrandLogoAsset {
   [key: string]: unknown;
 }
 
-function buildHeaders(orgId: string, userId?: string, runId?: string) {
+function buildHeaders(
+  orgId: string,
+  userId?: string,
+  runId?: string,
+  extras?: Record<string, string | undefined>
+) {
   const { apiKey } = getConfig();
   const headers: Record<string, string> = {
     "x-api-key": apiKey,
@@ -33,6 +38,11 @@ function buildHeaders(orgId: string, userId?: string, runId?: string) {
   };
   if (userId) headers["x-user-id"] = userId;
   if (runId) headers["x-run-id"] = runId;
+  if (extras) {
+    for (const [k, v] of Object.entries(extras)) {
+      if (v) headers[k] = v;
+    }
+  }
   return headers;
 }
 
@@ -56,6 +66,71 @@ export async function getBrand(
   const data = (await response.json()) as { brand?: BrandContext };
   if (!data.brand) throw new Error("brand-service response missing brand");
   return data.brand;
+}
+
+export interface ExtractFieldRequest {
+  key: string;
+  description: string;
+}
+
+export interface ExtractedFieldEntry {
+  value: unknown;
+  byBrand: Record<
+    string,
+    {
+      value: unknown;
+      cached: boolean;
+      extractedAt: string;
+      expiresAt: string | null;
+      sourceUrls: string[] | null;
+    }
+  >;
+}
+
+export interface ExtractFieldsResponse {
+  brands: Array<{
+    brandId: string;
+    domain: string;
+    name: string;
+    brandUrl: string;
+  }>;
+  fields: Record<string, ExtractedFieldEntry>;
+}
+
+export interface BrandIdentity {
+  orgId: string;
+  userId?: string;
+  runId?: string;
+  campaignId?: string;
+  workflowSlug?: string;
+  featureSlug?: string;
+}
+
+export async function extractBrandFields(
+  brandId: string,
+  fields: ExtractFieldRequest[],
+  identity: BrandIdentity
+): Promise<ExtractFieldsResponse> {
+  const { url } = getConfig();
+  const headers = buildHeaders(identity.orgId, identity.userId, identity.runId, {
+    "x-brand-id": brandId,
+    "x-campaign-id": identity.campaignId,
+    "x-workflow-slug": identity.workflowSlug,
+    "x-feature-slug": identity.featureSlug,
+    "Content-Type": "application/json",
+  });
+  const response = await fetch(`${url}/orgs/brands/extract-fields`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ fields }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `brand-service POST /orgs/brands/extract-fields failed (${response.status}): ${body}`
+    );
+  }
+  return (await response.json()) as ExtractFieldsResponse;
 }
 
 export async function getBrandLogo(

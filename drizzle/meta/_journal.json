@@ -15,6 +15,13 @@
       "when": 1746835200000,
       "tag": "0001_multi_source_opportunities",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1778832000000,
+      "tag": "0002_pitch_generation_metadata",
+      "breakpoints": true
     }
   ]
 }

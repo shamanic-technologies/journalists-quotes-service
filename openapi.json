@@ -44,6 +44,18 @@
           },
           "error": {
             "type": "string"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "balance_cents": {
+            "type": "integer"
+          },
+          "required_cents": {
+            "type": "integer"
           }
         },
         "required": [
@@ -244,7 +256,21 @@
             "format": "uuid"
           },
           "draft": {
-            "type": "string"
+            "type": "string",
+            "nullable": true
+          },
+          "pitchCharCount": {
+            "type": "integer",
+            "nullable": true
+          },
+          "pitchAttempts": {
+            "type": "integer",
+            "nullable": true
+          },
+          "contentGenRunId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
           },
           "submittedAt": {
             "type": "string",
@@ -258,7 +284,11 @@
               "selected",
               "published",
               "not_selected",
-              "error"
+              "error",
+              "length_violation",
+              "template_missing",
+              "brand_missing_fields",
+              "insufficient_credits"
             ]
           },
           "deliveryMethod": {
@@ -292,6 +322,9 @@
             "type": "string",
             "nullable": true
           },
+          "errorDetails": {
+            "nullable": true
+          },
           "parentRunId": {
             "type": "string",
             "nullable": true,
@@ -322,6 +355,9 @@
           "campaignId",
           "brandId",
           "draft",
+          "pitchCharCount",
+          "pitchAttempts",
+          "contentGenRunId",
           "submittedAt",
           "status",
           "deliveryMethod",
@@ -530,6 +566,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Insufficient credits in content-generation-service",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExpertQuoteRunResponse"
+                }
+              }
+            }
+          },
+          "424": {
+            "description": "Required precondition failed (brand fields missing or content-generation template missing)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExpertQuoteRunResponse"
                 }
               }
             }
@@ -761,7 +817,11 @@
                 "selected",
                 "published",
                 "not_selected",
-                "error"
+                "error",
+                "length_violation",
+                "template_missing",
+                "brand_missing_fields",
+                "insufficient_credits"
               ]
             },
             "required": false,

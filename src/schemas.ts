@@ -106,7 +106,10 @@ export const QuotePitchSchema = z
     featuredProfileId: z.number().int().nullable(),
     campaignId: z.string().uuid(),
     brandId: z.string().uuid(),
-    draft: z.string(),
+    draft: z.string().nullable(),
+    pitchCharCount: z.number().int().nullable(),
+    pitchAttempts: z.number().int().nullable(),
+    contentGenRunId: z.string().uuid().nullable(),
     submittedAt: z.string().nullable(),
     status: z.enum([
       "drafted",
@@ -115,6 +118,10 @@ export const QuotePitchSchema = z
       "published",
       "not_selected",
       "error",
+      "length_violation",
+      "template_missing",
+      "brand_missing_fields",
+      "insufficient_credits",
     ]),
     deliveryMethod: z.enum(["featured_api", "email_reply"]),
     deliveryTarget: z.string().nullable(),
@@ -123,6 +130,7 @@ export const QuotePitchSchema = z
     bounceStatus: z.string().nullable(),
     featuredArticleUrl: z.string().nullable(),
     error: z.string().nullable(),
+    errorDetails: z.unknown().nullable(),
     parentRunId: z.string().uuid().nullable(),
     runId: z.string().uuid().nullable(),
     orgId: z.string().uuid(),
@@ -141,6 +149,10 @@ export const QuotePitchListQuerySchema = z.object({
       "published",
       "not_selected",
       "error",
+      "length_violation",
+      "template_missing",
+      "brand_missing_fields",
+      "insufficient_credits",
     ])
     .optional(),
   limit: z.string().optional(),
@@ -168,6 +180,9 @@ export const ExpertQuoteRunResponseSchema = z
     pitchId: z.string().uuid().optional(),
     retryAfter: z.number().int().optional(),
     error: z.string().optional(),
+    missing: z.array(z.string()).optional(),
+    balance_cents: z.number().int().optional(),
+    required_cents: z.number().int().optional(),
   })
   .openapi("ExpertQuoteRunResponse");
 
@@ -261,6 +276,19 @@ registry.registerPath({
     400: {
       description: "Validation error",
       content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    402: {
+      description: "Insufficient credits in content-generation-service",
+      content: {
+        "application/json": { schema: ExpertQuoteRunResponseSchema },
+      },
+    },
+    424: {
+      description:
+        "Required precondition failed (brand fields missing or content-generation template missing)",
+      content: {
+        "application/json": { schema: ExpertQuoteRunResponseSchema },
+      },
     },
     502: {
       description: "Upstream service unavailable",
