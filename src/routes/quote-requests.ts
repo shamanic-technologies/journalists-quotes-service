@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { and, desc, eq, sql as drizzleSql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { quoteRequests, quotePitches } from "../db/schema.js";
+import { providerQuoteRequests, quotePitches } from "../db/schema.js";
 import { QuoteRequestListQuerySchema } from "../schemas.js";
 
 const router = Router();
@@ -12,8 +12,8 @@ router.get("/orgs/quote-requests/stats", async (req, res) => {
 
   const [{ total }] = await db
     .select({ total: drizzleSql<number>`count(*)::int` })
-    .from(quoteRequests)
-    .where(eq(quoteRequests.orgId, orgId));
+    .from(providerQuoteRequests)
+    .where(eq(providerQuoteRequests.orgId, orgId));
 
   const pitchCondition = campaignId
     ? and(
@@ -54,22 +54,26 @@ router.get("/orgs/quote-requests", async (req, res) => {
     return;
   }
   const orgId = req.orgId!;
-  const { source, limit, offset } = parsed.data;
+  const { provider, ingestion_channel, limit, offset } = parsed.data;
   const limitN = limit ? Number(limit) : 100;
   const offsetN = offset ? Number(offset) : 0;
 
-  const conditions = [eq(quoteRequests.orgId, orgId)];
-  if (source) conditions.push(eq(quoteRequests.source, source));
+  const conditions = [eq(providerQuoteRequests.orgId, orgId)];
+  if (provider) conditions.push(eq(providerQuoteRequests.provider, provider));
+  if (ingestion_channel)
+    conditions.push(
+      eq(providerQuoteRequests.ingestionChannel, ingestion_channel)
+    );
 
   const rows = await db
     .select()
-    .from(quoteRequests)
+    .from(providerQuoteRequests)
     .where(and(...conditions))
-    .orderBy(desc(quoteRequests.fetchedAt))
+    .orderBy(desc(providerQuoteRequests.fetchedAt))
     .limit(limitN)
     .offset(offsetN);
 
-  res.json({ quoteRequests: rows });
+  res.json({ providerQuoteRequests: rows });
 });
 
 router.get("/orgs/quote-requests/:id", async (req, res) => {
@@ -77,8 +81,8 @@ router.get("/orgs/quote-requests/:id", async (req, res) => {
   const { id } = req.params;
   const [row] = await db
     .select()
-    .from(quoteRequests)
-    .where(and(eq(quoteRequests.orgId, orgId), eq(quoteRequests.id, id)))
+    .from(providerQuoteRequests)
+    .where(and(eq(providerQuoteRequests.orgId, orgId), eq(providerQuoteRequests.id, id)))
     .limit(1);
   if (!row) {
     res.status(404).json({ error: "Quote request not found" });

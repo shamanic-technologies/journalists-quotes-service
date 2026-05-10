@@ -39,6 +39,7 @@ The server boots on `PORT` (default `3050`) and runs Drizzle migrations automati
 | `KEY_SERVICE_URL` / `KEY_SERVICE_API_KEY` | Featured creds resolution (TODO: provider) |
 | `BRAND_SERVICE_URL` / `BRAND_SERVICE_API_KEY` | Brand context + logo |
 | `CHAT_SERVICE_URL` / `CHAT_SERVICE_API_KEY` | RAG scoring (TODO: endpoint) |
+| `INBOUND_ALIAS_ROUTING` | JSON array mapping recipient aliases to providers (e.g. `[{"alias":"haro@inbox.<domain>","provider":"haro"}]`); empty/unset = all inbound emails stored with `provider=null` |
 | `CONTENT_GENERATION_SERVICE_URL` / `CONTENT_GENERATION_SERVICE_API_KEY` | Pitch generation (TODO: template) |
 
 ## Routes
@@ -48,19 +49,22 @@ The server boots on `PORT` (default `3050`) and runs Drizzle migrations automati
 | `GET` | `/health` | Public | Liveness |
 | `GET` | `/openapi.json` | Public | OpenAPI 3 spec |
 | `POST` | `/orgs/expert-quote-runs` | apiKey + orgId | Run one full loop for `{ campaignId, brandId }` |
-| `GET` | `/orgs/quote-requests` | apiKey + orgId | List sourced opportunities |
-| `GET` | `/orgs/quote-requests/:id` | apiKey + orgId | Single request |
+| `GET` | `/orgs/quote-requests` | apiKey + orgId | List provider quote requests (filter by `?provider=` and `?ingestion_channel=`); response key `providerQuoteRequests` |
+| `GET` | `/orgs/quote-requests/:id` | apiKey + orgId | Single provider quote request |
 | `GET` | `/orgs/quote-requests/stats` | apiKey + orgId | Aggregate counts |
 | `GET` | `/orgs/quote-pitches` | apiKey + orgId | List pitches |
 | `GET` | `/orgs/quote-pitches/:id` | apiKey + orgId | Single pitch |
 | `POST` | `/internal/sync-tracking` | apiKey | Reconcile selected/published/not-selected |
+| `POST` | `/webhooks/inbound-email` | service auth | Receive Postmark inbound email forwarded by `email-gateway-service` (idempotent on `MessageID`) |
 
 `POST /orgs/expert-quote-runs` returns one of:
 
-- `{ status: "submitted", quoteRequestId, pitchId }`
-- `{ status: "no_match" }`
-- `{ status: "rate_limited", retryAfter }`
-- `{ status: "error", error, pitchId, quoteRequestId }`
+- `200 { status: "submitted", quoteRequestId, pitchId }`
+- `200 { status: "no_match" }`
+- `200 { status: "rate_limited", retryAfter }`
+- `200 { status: "error", error, pitchId, quoteRequestId }` — Featured submit error or content-generation length-violation (pitch row persisted with status `error` or `length_violation`).
+- `402 { status: "error", error, balance_cents, required_cents, pitchId, quoteRequestId }` — content-generation-service insufficient credits (pitch row persisted with status `insufficient_credits`).
+- `424 { status: "error", error, missing?, pitchId, quoteRequestId }` — required precondition failed: brand-service returned missing required fields (`brand_missing_fields`) or content-generation-service template missing (`template_missing`).
 
 ## Featured.com integration
 
@@ -86,20 +90,49 @@ These mark integration points blocked on parallel tasks:
 
 - `key-service-client.getFeaturedCredentials`: TODO(featured-key-provider) — falls back to `FEATURED_USERNAME` / `FEATURED_PASSWORD` env vars when key-service returns 404 or is unset.
 - `chat-client.ragScore`: TODO(rag-endpoint) — falls back to recency-based scoring when chat-service `/orgs/rag/score` returns 404 or is unset.
-- `content-generation-client.generatePitch`: TODO(pitch-template) — falls back to a placeholder pitch when `expert-quote-pitch` template is missing.
 
 Remove each fallback once the corresponding upstream lands.
+
+## Pitch generation
+
+`POST /orgs/expert-quote-runs` calls `content-generation-service` `POST /generate-expert-quote-pitch` once the top-scoring opportunity is selected. No fallback — if generation fails, the pitch row is persisted with a distinct error status (no silent drop):
+
+| Upstream signal | Persisted `status` | HTTP returned |
+|-----------------|--------------------|--------------|
+| `200` | `submitted` (after Featured submit) or `error` (Featured failed) | `200` |
+| `400 ExpertQuotePitchLengthErrorResponse` | `length_violation` | `200` (status=error) |
+| `402` | `insufficient_credits` | `402` |
+| `404` (template missing) | `template_missing` | `424` |
+| brand-service missing required fields | `brand_missing_fields` | `424` |
+
+Brand fields hydrated via brand-service `POST /orgs/brands/extract-fields`: `industry`, `expertise`, `voice`, `targetAudience` — caller passes `brandId`, missing fields fail loud (no silent fallback). Brand `name` comes from brand-service metadata. All identity headers (`x-org-id`, `x-user-id`, `x-run-id`, `x-brand-id`, `x-campaign-id`, `x-workflow-slug`, `x-feature-slug`) forwarded to content-generation-service.
+
+`quote_pitches` rows record `pitch_char_count`, `pitch_attempts`, and `content_gen_run_id` for traceability into runs-service.
+
+## Multi-source schema (0001 migration)
+
+Phase 1 introduces a 4-layer model so the service can ingest opportunities from email-only providers (HARO, Source of Sources, Qwoted email digest, SourceBottle, Help-a-B2B-Writer, ResponseSource, ProfNet) alongside the existing Featured.com Premium API:
+
+| Layer | Table | Purpose |
+|-------|-------|---------|
+| Bronze | `inbound_emails` | raw Postmark inbound payloads, deduped on `message_id`, parsed asynchronously |
+| Silver | `provider_quote_requests` | one row per provider ingestion (ex `quote_requests`); unique on `(provider, ingestion_channel, external_id)` |
+| Gold | `quote_opportunities` | global cluster of duplicate provider rows = one journalist demand; unique on `fingerprint` |
+| Pitch | `quote_pitches` | response we send; `delivery_method` = `featured_api` or `email_reply`; partial unique `(quote_opportunity_id, brand_id)` excluding `status='error'` |
+
+Legacy rows are backfilled (`provider='featured'`, `ingestion_channel='api'`, `external_id=featured_question_id::text`, `delivery_method='featured_api'`). Cluster assignment, parsers, dispatcher modes, and the new endpoint split land in subsequent PRs.
 
 ## Out of scope (handled elsewhere)
 
 - key-service `featured` provider registration
 - chat-service `/orgs/rag/score` implementation
+- chat-service `/orgs/rag/embed` (phase 1.5 fuzzy dedup, separate workspace)
 - content-generation-service `expert-quote-pitch` template
 - features-service `pr-expert-quote-outreach` registration
 - workflow-service workflow definition
 - distribute.you dashboard UI
-- Email-based ingestion (HARO / SOS / Qwoted) — no current plan
-- Webhooks — Featured does not expose any
+- email-gateway-service inbound forwarding + threading fields (separate workspace)
+- Postmark direct integration — proxied via email-gateway-service
 - Cron / scheduling — workflow-service handles
 
 ## Tests

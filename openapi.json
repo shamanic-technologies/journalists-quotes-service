@@ -44,6 +44,18 @@
           },
           "error": {
             "type": "string"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "balance_cents": {
+            "type": "integer"
+          },
+          "required_cents": {
+            "type": "integer"
           }
         },
         "required": [
@@ -78,20 +90,48 @@
           "brandId"
         ]
       },
-      "QuoteRequest": {
+      "ProviderQuoteRequest": {
         "type": "object",
         "properties": {
           "id": {
             "type": "string",
             "format": "uuid"
           },
-          "featuredQuestionId": {
-            "type": "integer"
-          },
-          "source": {
+          "provider": {
             "type": "string"
           },
+          "ingestionChannel": {
+            "type": "string"
+          },
+          "externalId": {
+            "type": "string"
+          },
+          "featuredQuestionId": {
+            "type": "integer",
+            "nullable": true
+          },
+          "inboundEmailId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
           "mediaOutlet": {
+            "type": "string",
+            "nullable": true
+          },
+          "journalistName": {
+            "type": "string",
+            "nullable": true
+          },
+          "journalistEmail": {
+            "type": "string",
+            "nullable": true
+          },
+          "pitchEmail": {
+            "type": "string",
+            "nullable": true
+          },
+          "category": {
             "type": "string",
             "nullable": true
           },
@@ -109,6 +149,18 @@
           "fetchedAt": {
             "type": "string"
           },
+          "quoteOpportunityId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "isCanonical": {
+            "type": "boolean"
+          },
+          "fingerprint": {
+            "type": "string",
+            "nullable": true
+          },
           "orgId": {
             "type": "string",
             "format": "uuid"
@@ -122,13 +174,23 @@
         },
         "required": [
           "id",
+          "provider",
+          "ingestionChannel",
+          "externalId",
           "featuredQuestionId",
-          "source",
+          "inboundEmailId",
           "mediaOutlet",
+          "journalistName",
+          "journalistEmail",
+          "pitchEmail",
+          "category",
           "opportunityText",
           "pitchUrl",
           "deadline",
           "fetchedAt",
+          "quoteOpportunityId",
+          "isCanonical",
+          "fingerprint",
           "orgId",
           "createdAt",
           "updatedAt"
@@ -172,11 +234,18 @@
             "type": "string",
             "format": "uuid"
           },
+          "quoteOpportunityId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
           "featuredQuestionId": {
-            "type": "integer"
+            "type": "integer",
+            "nullable": true
           },
           "featuredProfileId": {
-            "type": "integer"
+            "type": "integer",
+            "nullable": true
           },
           "campaignId": {
             "type": "string",
@@ -187,7 +256,21 @@
             "format": "uuid"
           },
           "draft": {
-            "type": "string"
+            "type": "string",
+            "nullable": true
+          },
+          "pitchCharCount": {
+            "type": "integer",
+            "nullable": true
+          },
+          "pitchAttempts": {
+            "type": "integer",
+            "nullable": true
+          },
+          "contentGenRunId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
           },
           "submittedAt": {
             "type": "string",
@@ -201,8 +284,35 @@
               "selected",
               "published",
               "not_selected",
-              "error"
+              "error",
+              "length_violation",
+              "template_missing",
+              "brand_missing_fields",
+              "insufficient_credits"
             ]
+          },
+          "deliveryMethod": {
+            "type": "string",
+            "enum": [
+              "featured_api",
+              "email_reply"
+            ]
+          },
+          "deliveryTarget": {
+            "type": "string",
+            "nullable": true
+          },
+          "outboundMessageId": {
+            "type": "string",
+            "nullable": true
+          },
+          "replyInThreadMessageId": {
+            "type": "string",
+            "nullable": true
+          },
+          "bounceStatus": {
+            "type": "string",
+            "nullable": true
           },
           "featuredArticleUrl": {
             "type": "string",
@@ -210,6 +320,9 @@
           },
           "error": {
             "type": "string",
+            "nullable": true
+          },
+          "errorDetails": {
             "nullable": true
           },
           "parentRunId": {
@@ -236,13 +349,22 @@
         "required": [
           "id",
           "quoteRequestId",
+          "quoteOpportunityId",
           "featuredQuestionId",
           "featuredProfileId",
           "campaignId",
           "brandId",
           "draft",
+          "pitchCharCount",
+          "pitchAttempts",
+          "contentGenRunId",
           "submittedAt",
           "status",
+          "deliveryMethod",
+          "deliveryTarget",
+          "outboundMessageId",
+          "replyInThreadMessageId",
+          "bounceStatus",
           "featuredArticleUrl",
           "error",
           "parentRunId",
@@ -250,6 +372,97 @@
           "orgId",
           "createdAt",
           "updatedAt"
+        ]
+      },
+      "InboundEmailAcceptedResponse": {
+        "type": "object",
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          },
+          "inboundEmailId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "deduplicated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted"
+        ]
+      },
+      "PostmarkInboundWebhook": {
+        "type": "object",
+        "properties": {
+          "MessageID": {
+            "type": "string",
+            "minLength": 1
+          },
+          "From": {
+            "type": "string",
+            "minLength": 1
+          },
+          "FromFull": {
+            "type": "object",
+            "properties": {
+              "Email": {
+                "type": "string",
+                "minLength": 1
+              },
+              "Name": {
+                "type": "string"
+              },
+              "MailboxHash": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "Email"
+            ]
+          },
+          "To": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ToFull": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "Email": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "Name": {
+                  "type": "string"
+                },
+                "MailboxHash": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "Email"
+              ]
+            }
+          },
+          "Subject": {
+            "type": "string"
+          },
+          "Date": {
+            "type": "string"
+          },
+          "TextBody": {
+            "type": "string"
+          },
+          "HtmlBody": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "MessageID",
+          "From",
+          "To"
         ]
       },
       "SyncTrackingResponse": {
@@ -357,6 +570,26 @@
               }
             }
           },
+          "402": {
+            "description": "Insufficient credits in content-generation-service",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExpertQuoteRunResponse"
+                }
+              }
+            }
+          },
+          "424": {
+            "description": "Required precondition failed (brand fields missing or content-generation template missing)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExpertQuoteRunResponse"
+                }
+              }
+            }
+          },
           "502": {
             "description": "Upstream service unavailable",
             "content": {
@@ -393,7 +626,15 @@
               "type": "string"
             },
             "required": false,
-            "name": "source",
+            "name": "provider",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "ingestion_channel",
             "in": "query"
           },
           {
@@ -430,15 +671,15 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "quoteRequests": {
+                    "providerQuoteRequests": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/QuoteRequest"
+                        "$ref": "#/components/schemas/ProviderQuoteRequest"
                       }
                     }
                   },
                   "required": [
-                    "quoteRequests"
+                    "providerQuoteRequests"
                   ]
                 }
               }
@@ -526,7 +767,7 @@
                   "type": "object",
                   "properties": {
                     "quoteRequest": {
-                      "$ref": "#/components/schemas/QuoteRequest"
+                      "$ref": "#/components/schemas/ProviderQuoteRequest"
                     }
                   },
                   "required": [
@@ -576,7 +817,11 @@
                 "selected",
                 "published",
                 "not_selected",
-                "error"
+                "error",
+                "length_violation",
+                "template_missing",
+                "brand_missing_fields",
+                "insufficient_credits"
               ]
             },
             "required": false,
@@ -683,6 +928,68 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/inbound-email": {
+      "post": {
+        "summary": "Receive inbound email forwarded by email-gateway-service (raw Postmark payload)",
+        "description": "Service-to-service endpoint. Headers required: x-api-key (shared with caller), x-service-name=email-gateway-service. Idempotent on Postmark MessageID.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "x-service-name",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostmarkInboundWebhook"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Email accepted (or deduplicated)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboundEmailAcceptedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
             "content": {
               "application/json": {
                 "schema": {

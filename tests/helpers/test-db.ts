@@ -1,6 +1,8 @@
 import { db, sql } from "../../src/db/index.js";
 import {
-  quoteRequests,
+  inboundEmails,
+  providerQuoteRequests,
+  quoteOpportunities,
   quotePriorities,
   quotePitches,
   featuredProfiles,
@@ -9,7 +11,9 @@ import {
 export async function cleanTestData() {
   await db.delete(quotePitches);
   await db.delete(quotePriorities);
-  await db.delete(quoteRequests);
+  await db.delete(providerQuoteRequests);
+  await db.delete(quoteOpportunities);
+  await db.delete(inboundEmails);
   await db.delete(featuredProfiles);
 }
 

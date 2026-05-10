@@ -11,9 +11,11 @@ import expertQuoteRunsRoutes from "./routes/expert-quote-runs.js";
 import quoteRequestsRoutes from "./routes/quote-requests.js";
 import quotePitchesRoutes from "./routes/quote-pitches.js";
 import syncTrackingRoutes from "./routes/sync-tracking.js";
+import inboundEmailRoutes from "./routes/webhooks/inbound-email.js";
 import {
   apiKeyAuth,
   requireOrgId,
+  requireServiceAuth,
   withRunTracking,
 } from "./middleware/auth.js";
 
@@ -38,6 +40,13 @@ app.get("/openapi.json", (_req, res) => {
 });
 
 app.use(healthRoutes);
+
+// /webhooks/* routes (service-to-service auth, called by sibling services)
+app.use(
+  "/webhooks",
+  requireServiceAuth(["email-gateway-service"])
+);
+app.use(inboundEmailRoutes);
 
 // /internal/* routes (api key only)
 app.use("/internal", apiKeyAuth);

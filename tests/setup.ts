@@ -7,3 +7,8 @@ process.env.SCORE_THRESHOLD = "0.5";
 process.env.FEATURED_USERNAME = "test-featured-user";
 process.env.FEATURED_PASSWORD = "test-featured-pass";
 process.env.FEATURED_API_BASE_URL = "https://featured.test/api/external-users";
+process.env.INBOUND_ALIAS_ROUTING = JSON.stringify([
+  { alias: "haro@inbox.test", provider: "haro" },
+  { alias: "sos@inbox.test", provider: "sos" },
+  { alias: "qwoted@inbox.test", provider: "qwoted" },
+]);
