@@ -171,6 +171,37 @@ export const ExpertQuoteRunResponseSchema = z
   })
   .openapi("ExpertQuoteRunResponse");
 
+// ==================== Inbound Email Webhook Schemas ====================
+
+export const PostmarkInboundFullSchema = z.object({
+  Email: z.string().min(1),
+  Name: z.string().optional(),
+  MailboxHash: z.string().optional(),
+});
+
+export const PostmarkInboundWebhookSchema = z
+  .object({
+    MessageID: z.string().min(1),
+    From: z.string().min(1),
+    FromFull: PostmarkInboundFullSchema.optional(),
+    To: z.string().min(1),
+    ToFull: z.array(PostmarkInboundFullSchema).optional(),
+    Subject: z.string().optional(),
+    Date: z.string().optional(),
+    TextBody: z.string().optional(),
+    HtmlBody: z.string().optional(),
+  })
+  .passthrough()
+  .openapi("PostmarkInboundWebhook");
+
+export const InboundEmailAcceptedResponseSchema = z
+  .object({
+    accepted: z.boolean(),
+    inboundEmailId: z.string().uuid().optional(),
+    deduplicated: z.boolean().optional(),
+  })
+  .openapi("InboundEmailAcceptedResponse");
+
 // ==================== Sync Tracking Schemas ====================
 
 export const SyncTrackingResponseSchema = z
@@ -340,6 +371,42 @@ registry.registerPath({
     },
     404: {
       description: "Not found",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/webhooks/inbound-email",
+  summary:
+    "Receive inbound email forwarded by email-gateway-service (raw Postmark payload)",
+  description:
+    "Service-to-service endpoint. Headers required: x-api-key (shared with caller), x-service-name=email-gateway-service. Idempotent on Postmark MessageID.",
+  security: [{ [apiKeyAuth.name]: [] }],
+  request: {
+    headers: z.object({
+      "x-service-name": z.string(),
+    }),
+    body: {
+      content: {
+        "application/json": { schema: PostmarkInboundWebhookSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Email accepted (or deduplicated)",
+      content: {
+        "application/json": { schema: InboundEmailAcceptedResponseSchema },
+      },
+    },
+    400: {
+      description: "Malformed payload",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    401: {
+      description: "Unauthorized",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
   },

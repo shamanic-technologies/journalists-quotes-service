@@ -39,6 +39,7 @@ The server boots on `PORT` (default `3050`) and runs Drizzle migrations automati
 | `KEY_SERVICE_URL` / `KEY_SERVICE_API_KEY` | Featured creds resolution (TODO: provider) |
 | `BRAND_SERVICE_URL` / `BRAND_SERVICE_API_KEY` | Brand context + logo |
 | `CHAT_SERVICE_URL` / `CHAT_SERVICE_API_KEY` | RAG scoring (TODO: endpoint) |
+| `INBOUND_ALIAS_ROUTING` | JSON array mapping recipient aliases to providers (e.g. `[{"alias":"haro@inbox.<domain>","provider":"haro"}]`); empty/unset = all inbound emails stored with `provider=null` |
 | `CONTENT_GENERATION_SERVICE_URL` / `CONTENT_GENERATION_SERVICE_API_KEY` | Pitch generation (TODO: template) |
 
 ## Routes
@@ -54,6 +55,7 @@ The server boots on `PORT` (default `3050`) and runs Drizzle migrations automati
 | `GET` | `/orgs/quote-pitches` | apiKey + orgId | List pitches |
 | `GET` | `/orgs/quote-pitches/:id` | apiKey + orgId | Single pitch |
 | `POST` | `/internal/sync-tracking` | apiKey | Reconcile selected/published/not-selected |
+| `POST` | `/webhooks/inbound-email` | service auth | Receive Postmark inbound email forwarded by `email-gateway-service` (idempotent on `MessageID`) |
 
 `POST /orgs/expert-quote-runs` returns one of:
 

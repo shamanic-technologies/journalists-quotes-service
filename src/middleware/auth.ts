@@ -42,6 +42,29 @@ export function apiKeyAuth(
   next();
 }
 
+/**
+ * Verify request comes from a known sibling service.
+ * Requires:
+ *   - x-api-key matching JOURNALISTS_QUOTES_SERVICE_API_KEY
+ *   - x-service-name matching one of the allowedServices
+ */
+export function requireServiceAuth(allowedServices: readonly string[]) {
+  const allowed = new Set(allowedServices);
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const apiKey = req.headers["x-api-key"] as string | undefined;
+    if (!apiKey || apiKey !== process.env.JOURNALISTS_QUOTES_SERVICE_API_KEY) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const serviceName = req.headers["x-service-name"] as string | undefined;
+    if (!serviceName || !allowed.has(serviceName)) {
+      res.status(401).json({ error: "Unauthorized: unknown calling service" });
+      return;
+    }
+    next();
+  };
+}
+
 export function requireOrgId(
   req: Request,
   res: Response,
