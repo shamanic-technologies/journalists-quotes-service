@@ -5,9 +5,11 @@ import { createExpertQuoteRunsRouter, type ExpertQuoteRunsDeps } from "../../src
 import quoteRequestsRoutes from "../../src/routes/quote-requests.js";
 import quotePitchesRoutes from "../../src/routes/quote-pitches.js";
 import { createSyncTrackingRouter, type SyncTrackingDeps } from "../../src/routes/sync-tracking.js";
+import inboundEmailRoutes from "../../src/routes/webhooks/inbound-email.js";
 import {
   apiKeyAuth,
   requireOrgId,
+  requireServiceAuth,
   withRunTracking,
 } from "../../src/middleware/auth.js";
 
@@ -21,6 +23,12 @@ export function createTestApp(deps: TestAppDeps = {}) {
   app.use(cors());
   app.use(express.json({ limit: "10mb" }));
   app.use(healthRoutes);
+
+  app.use(
+    "/webhooks",
+    requireServiceAuth(["email-gateway-service"])
+  );
+  app.use(inboundEmailRoutes);
 
   app.use("/internal", apiKeyAuth);
   app.use(createSyncTrackingRouter(deps.syncTrackingDeps));
