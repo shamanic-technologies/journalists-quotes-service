@@ -8,16 +8,14 @@ function getRunsConfig() {
 }
 
 export interface CreateRunResponse {
-  run: {
-    id: string;
-    parentRunId: string | null;
-    service: string;
-    operation: string;
-  };
+  id: string;
+  parentRunId: string | null;
+  serviceName: string;
+  taskName: string;
 }
 
 export async function createChildRun(
-  request: { parentRunId?: string; service: string; operation: string },
+  request: { parentRunId?: string; serviceName: string; taskName: string },
   orgId?: string,
   userId?: string
 ): Promise<CreateRunResponse> {
@@ -29,11 +27,15 @@ export async function createChildRun(
   };
   if (orgId) headers["x-org-id"] = orgId;
   if (userId) headers["x-user-id"] = userId;
+  if (request.parentRunId) headers["x-run-id"] = request.parentRunId;
 
   const response = await fetch(`${url}/v1/runs`, {
     method: "POST",
     headers,
-    body: JSON.stringify(request),
+    body: JSON.stringify({
+      serviceName: request.serviceName,
+      taskName: request.taskName,
+    }),
   });
 
   if (!response.ok) {

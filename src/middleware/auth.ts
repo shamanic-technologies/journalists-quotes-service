@@ -90,13 +90,13 @@ export async function withRunTracking(
     return;
   }
 
-  const operation = `${req.method} ${req.path}`;
+  const taskName = `${req.method} ${req.path}`;
   try {
-    const { run } = await createChildRun(
+    const run = await createChildRun(
       {
         parentRunId: req.parentRunId,
-        service: "journalists-quotes-service",
-        operation,
+        serviceName: "journalists-quotes-service",
+        taskName,
       },
       req.orgId,
       req.userId
