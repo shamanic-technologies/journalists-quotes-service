@@ -19,7 +19,7 @@ import { db } from "../../src/db/index.js";
 import {
   featuredProfiles,
   quotePitches,
-  quoteRequests,
+  providerQuoteRequests,
 } from "../../src/db/schema.js";
 import {
   _resetFeaturedClientState,
@@ -269,12 +269,12 @@ describe("POST /orgs/expert-quote-runs", () => {
     const orgAList = await request(app)
       .get("/orgs/quote-requests")
       .set(AUTH_HEADERS);
-    expect(orgAList.body.quoteRequests.length).toBeGreaterThan(0);
+    expect(orgAList.body.providerQuoteRequests.length).toBeGreaterThan(0);
 
     const orgBList = await request(app)
       .get("/orgs/quote-requests")
       .set(AUTH_HEADERS_ORG_B);
-    expect(orgBList.body.quoteRequests).toEqual([]);
+    expect(orgBList.body.providerQuoteRequests).toEqual([]);
   });
 
   it("persists parent_run_id and run_id on quote_pitches", async () => {

@@ -78,20 +78,48 @@
           "brandId"
         ]
       },
-      "QuoteRequest": {
+      "ProviderQuoteRequest": {
         "type": "object",
         "properties": {
           "id": {
             "type": "string",
             "format": "uuid"
           },
-          "featuredQuestionId": {
-            "type": "integer"
-          },
-          "source": {
+          "provider": {
             "type": "string"
           },
+          "ingestionChannel": {
+            "type": "string"
+          },
+          "externalId": {
+            "type": "string"
+          },
+          "featuredQuestionId": {
+            "type": "integer",
+            "nullable": true
+          },
+          "inboundEmailId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
           "mediaOutlet": {
+            "type": "string",
+            "nullable": true
+          },
+          "journalistName": {
+            "type": "string",
+            "nullable": true
+          },
+          "journalistEmail": {
+            "type": "string",
+            "nullable": true
+          },
+          "pitchEmail": {
+            "type": "string",
+            "nullable": true
+          },
+          "category": {
             "type": "string",
             "nullable": true
           },
@@ -109,6 +137,18 @@
           "fetchedAt": {
             "type": "string"
           },
+          "quoteOpportunityId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "isCanonical": {
+            "type": "boolean"
+          },
+          "fingerprint": {
+            "type": "string",
+            "nullable": true
+          },
           "orgId": {
             "type": "string",
             "format": "uuid"
@@ -122,13 +162,23 @@
         },
         "required": [
           "id",
+          "provider",
+          "ingestionChannel",
+          "externalId",
           "featuredQuestionId",
-          "source",
+          "inboundEmailId",
           "mediaOutlet",
+          "journalistName",
+          "journalistEmail",
+          "pitchEmail",
+          "category",
           "opportunityText",
           "pitchUrl",
           "deadline",
           "fetchedAt",
+          "quoteOpportunityId",
+          "isCanonical",
+          "fingerprint",
           "orgId",
           "createdAt",
           "updatedAt"
@@ -172,11 +222,18 @@
             "type": "string",
             "format": "uuid"
           },
+          "quoteOpportunityId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
           "featuredQuestionId": {
-            "type": "integer"
+            "type": "integer",
+            "nullable": true
           },
           "featuredProfileId": {
-            "type": "integer"
+            "type": "integer",
+            "nullable": true
           },
           "campaignId": {
             "type": "string",
@@ -203,6 +260,29 @@
               "not_selected",
               "error"
             ]
+          },
+          "deliveryMethod": {
+            "type": "string",
+            "enum": [
+              "featured_api",
+              "email_reply"
+            ]
+          },
+          "deliveryTarget": {
+            "type": "string",
+            "nullable": true
+          },
+          "outboundMessageId": {
+            "type": "string",
+            "nullable": true
+          },
+          "replyInThreadMessageId": {
+            "type": "string",
+            "nullable": true
+          },
+          "bounceStatus": {
+            "type": "string",
+            "nullable": true
           },
           "featuredArticleUrl": {
             "type": "string",
@@ -236,6 +316,7 @@
         "required": [
           "id",
           "quoteRequestId",
+          "quoteOpportunityId",
           "featuredQuestionId",
           "featuredProfileId",
           "campaignId",
@@ -243,6 +324,11 @@
           "draft",
           "submittedAt",
           "status",
+          "deliveryMethod",
+          "deliveryTarget",
+          "outboundMessageId",
+          "replyInThreadMessageId",
+          "bounceStatus",
           "featuredArticleUrl",
           "error",
           "parentRunId",
@@ -393,7 +479,15 @@
               "type": "string"
             },
             "required": false,
-            "name": "source",
+            "name": "provider",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "ingestion_channel",
             "in": "query"
           },
           {
@@ -430,15 +524,15 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "quoteRequests": {
+                    "providerQuoteRequests": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/QuoteRequest"
+                        "$ref": "#/components/schemas/ProviderQuoteRequest"
                       }
                     }
                   },
                   "required": [
-                    "quoteRequests"
+                    "providerQuoteRequests"
                   ]
                 }
               }
@@ -526,7 +620,7 @@
                   "type": "object",
                   "properties": {
                     "quoteRequest": {
-                      "$ref": "#/components/schemas/QuoteRequest"
+                      "$ref": "#/components/schemas/ProviderQuoteRequest"
                     }
                   },
                   "required": [

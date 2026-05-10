@@ -23,25 +23,67 @@ export const ErrorResponseSchema = z
 export const QuoteRequestSchema = z
   .object({
     id: z.string().uuid(),
-    featuredQuestionId: z.number().int(),
-    source: z.string(),
+    provider: z.string(),
+    ingestionChannel: z.string(),
+    externalId: z.string(),
+    featuredQuestionId: z.number().int().nullable(),
+    inboundEmailId: z.string().uuid().nullable(),
     mediaOutlet: z.string().nullable(),
+    journalistName: z.string().nullable(),
+    journalistEmail: z.string().nullable(),
+    pitchEmail: z.string().nullable(),
+    category: z.string().nullable(),
     opportunityText: z.string(),
     pitchUrl: z.string().nullable(),
     deadline: z.string().nullable(),
     fetchedAt: z.string(),
+    quoteOpportunityId: z.string().uuid().nullable(),
+    isCanonical: z.boolean(),
+    fingerprint: z.string().nullable(),
     orgId: z.string().uuid(),
     createdAt: z.string(),
     updatedAt: z.string(),
   })
-  .openapi("QuoteRequest");
+  .openapi("ProviderQuoteRequest");
 
 export const QuoteRequestListQuerySchema = z.object({
   campaign_id: z.string().uuid().optional(),
-  source: z.string().optional(),
+  provider: z.string().optional(),
+  ingestion_channel: z.string().optional(),
   limit: z.string().optional(),
   offset: z.string().optional(),
 });
+
+export const QuoteOpportunitySchema = z
+  .object({
+    id: z.string().uuid(),
+    fingerprint: z.string(),
+    canonicalText: z.string(),
+    canonicalOutlet: z.string().nullable(),
+    canonicalDeadline: z.string().nullable(),
+    clusterMethod: z.enum(["fingerprint", "embedding", "manual"]),
+    firstSeenAt: z.string(),
+    lastSeenAt: z.string(),
+    createdAt: z.string(),
+  })
+  .openapi("QuoteOpportunity");
+
+export const InboundEmailSchema = z
+  .object({
+    id: z.string().uuid(),
+    messageId: z.string(),
+    fromEmail: z.string(),
+    toEmail: z.string(),
+    subject: z.string().nullable(),
+    receivedAt: z.string(),
+    provider: z.string().nullable(),
+    ingestionChannel: z.string(),
+    sourceAlias: z.string().nullable(),
+    processingStatus: z.enum(["pending", "parsed", "failed", "skipped"]),
+    parseError: z.string().nullable(),
+    createdAt: z.string(),
+  })
+  .openapi("InboundEmail");
 
 export const QuoteRequestStatsSchema = z
   .object({
@@ -59,8 +101,9 @@ export const QuotePitchSchema = z
   .object({
     id: z.string().uuid(),
     quoteRequestId: z.string().uuid(),
-    featuredQuestionId: z.number().int(),
-    featuredProfileId: z.number().int(),
+    quoteOpportunityId: z.string().uuid().nullable(),
+    featuredQuestionId: z.number().int().nullable(),
+    featuredProfileId: z.number().int().nullable(),
     campaignId: z.string().uuid(),
     brandId: z.string().uuid(),
     draft: z.string(),
@@ -73,6 +116,11 @@ export const QuotePitchSchema = z
       "not_selected",
       "error",
     ]),
+    deliveryMethod: z.enum(["featured_api", "email_reply"]),
+    deliveryTarget: z.string().nullable(),
+    outboundMessageId: z.string().nullable(),
+    replyInThreadMessageId: z.string().nullable(),
+    bounceStatus: z.string().nullable(),
     featuredArticleUrl: z.string().nullable(),
     error: z.string().nullable(),
     parentRunId: z.string().uuid().nullable(),
@@ -202,7 +250,7 @@ registry.registerPath({
       content: {
         "application/json": {
           schema: z.object({
-            quoteRequests: z.array(QuoteRequestSchema),
+            providerQuoteRequests: z.array(QuoteRequestSchema),
           }),
         },
       },

@@ -2,7 +2,7 @@ import { Router } from "express";
 import { and, eq, sql as drizzleSql, isNull, or } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
-  quoteRequests,
+  providerQuoteRequests,
   quotePriorities,
   quotePitches,
   featuredProfiles,
@@ -145,11 +145,13 @@ export function createExpertQuoteRunsRouter(
     const opportunities = await client.listOpportunities();
     if (opportunities.length > 0) {
       await db
-        .insert(quoteRequests)
+        .insert(providerQuoteRequests)
         .values(
           opportunities.map((o) => ({
+            provider: o.source ?? "featured",
+            ingestionChannel: "api",
+            externalId: String(o.featuredQuestionId),
             featuredQuestionId: o.featuredQuestionId,
-            source: o.source ?? "featured",
             mediaOutlet: o.mediaOutlet ?? null,
             opportunityText: o.opportunity,
             pitchUrl: o.pitchUrl ?? null,
@@ -163,23 +165,23 @@ export function createExpertQuoteRunsRouter(
 
     const candidates = await db
       .select({
-        id: quoteRequests.id,
-        featuredQuestionId: quoteRequests.featuredQuestionId,
-        opportunityText: quoteRequests.opportunityText,
-        mediaOutlet: quoteRequests.mediaOutlet,
-        deadline: quoteRequests.deadline,
-        pitchUrl: quoteRequests.pitchUrl,
+        id: providerQuoteRequests.id,
+        featuredQuestionId: providerQuoteRequests.featuredQuestionId,
+        opportunityText: providerQuoteRequests.opportunityText,
+        mediaOutlet: providerQuoteRequests.mediaOutlet,
+        deadline: providerQuoteRequests.deadline,
+        pitchUrl: providerQuoteRequests.pitchUrl,
         existingPitchStatus: quotePitches.status,
       })
-      .from(quoteRequests)
+      .from(providerQuoteRequests)
       .leftJoin(
         quotePitches,
         and(
-          eq(quotePitches.quoteRequestId, quoteRequests.id),
+          eq(quotePitches.quoteRequestId, providerQuoteRequests.id),
           eq(quotePitches.campaignId, campaignId)
         )
       )
-      .where(eq(quoteRequests.orgId, orgId));
+      .where(eq(providerQuoteRequests.orgId, orgId));
 
     const eligible = candidates.filter(
       (c) =>
@@ -281,10 +283,18 @@ export function createExpertQuoteRunsRouter(
       draft = draft.slice(0, 2500);
     }
 
+    if (top.featuredQuestionId == null) {
+      res.status(500).json({
+        error:
+          "Selected request has no featured_question_id; Featured API submission requires it",
+      });
+      return;
+    }
+    const featuredQuestionId = top.featuredQuestionId;
     try {
       await client.submitAnswer({
         answer: draft,
-        featuredQuestionId: top.featuredQuestionId,
+        featuredQuestionId,
         profileId: profileRow.featuredProfileId,
       });
     } catch (err) {
@@ -302,6 +312,8 @@ export function createExpertQuoteRunsRouter(
           brandId,
           draft,
           status: "error",
+          deliveryMethod: "featured_api",
+          deliveryTarget: top.pitchUrl ?? null,
           error: (err as Error).message,
           parentRunId,
           runId: runId ?? null,
@@ -327,6 +339,8 @@ export function createExpertQuoteRunsRouter(
         brandId,
         draft,
         status: "submitted",
+        deliveryMethod: "featured_api",
+        deliveryTarget: top.pitchUrl ?? null,
         submittedAt: new Date(),
         parentRunId,
         runId: runId ?? null,
