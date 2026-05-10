@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { and, eq, sql as drizzleSql, isNull, or } from "drizzle-orm";
+import { and, eq, sql as drizzleSql } from "drizzle-orm";
+import { asyncHandler } from "../middleware/async-handler.js";
 import { db } from "../db/index.js";
 import {
   quoteRequests,
@@ -64,7 +65,7 @@ export function createExpertQuoteRunsRouter(
   const buildClient = deps.buildClient ?? defaultBuildClient;
   const fetchLogoBytes = deps.fetchLogoBytes ?? defaultFetchLogoBytes;
 
-  router.post("/orgs/expert-quote-runs", async (req, res) => {
+  router.post("/orgs/expert-quote-runs", asyncHandler(async (req, res) => {
     const parsed = ExpertQuoteRunRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.message });
@@ -339,7 +340,7 @@ export function createExpertQuoteRunsRouter(
       quoteRequestId: top.id,
       pitchId: pitch.id,
     });
-  });
+  }));
 
   return router;
 }

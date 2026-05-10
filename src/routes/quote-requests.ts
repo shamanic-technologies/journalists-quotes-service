@@ -1,12 +1,13 @@
 import { Router } from "express";
 import { and, desc, eq, sql as drizzleSql } from "drizzle-orm";
+import { asyncHandler } from "../middleware/async-handler.js";
 import { db } from "../db/index.js";
 import { quoteRequests, quotePitches } from "../db/schema.js";
 import { QuoteRequestListQuerySchema } from "../schemas.js";
 
 const router = Router();
 
-router.get("/orgs/quote-requests/stats", async (req, res) => {
+router.get("/orgs/quote-requests/stats", asyncHandler(async (req, res) => {
   const orgId = req.orgId!;
   const campaignId = req.query.campaign_id as string | undefined;
 
@@ -45,9 +46,9 @@ router.get("/orgs/quote-requests/stats", async (req, res) => {
     totalPublished: byStatus.published ?? 0,
     totalNotSelected: byStatus.not_selected ?? 0,
   });
-});
+}));
 
-router.get("/orgs/quote-requests", async (req, res) => {
+router.get("/orgs/quote-requests", asyncHandler(async (req, res) => {
   const parsed = QuoteRequestListQuerySchema.safeParse(req.query);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
@@ -70,9 +71,9 @@ router.get("/orgs/quote-requests", async (req, res) => {
     .offset(offsetN);
 
   res.json({ quoteRequests: rows });
-});
+}));
 
-router.get("/orgs/quote-requests/:id", async (req, res) => {
+router.get("/orgs/quote-requests/:id", asyncHandler(async (req, res) => {
   const orgId = req.orgId!;
   const { id } = req.params;
   const [row] = await db
@@ -85,6 +86,6 @@ router.get("/orgs/quote-requests/:id", async (req, res) => {
     return;
   }
   res.json({ quoteRequest: row });
-});
+}));
 
 export default router;

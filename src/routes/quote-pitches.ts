@@ -1,12 +1,13 @@
 import { Router } from "express";
 import { and, desc, eq } from "drizzle-orm";
+import { asyncHandler } from "../middleware/async-handler.js";
 import { db } from "../db/index.js";
 import { quotePitches } from "../db/schema.js";
 import { QuotePitchListQuerySchema } from "../schemas.js";
 
 const router = Router();
 
-router.get("/orgs/quote-pitches", async (req, res) => {
+router.get("/orgs/quote-pitches", asyncHandler(async (req, res) => {
   const parsed = QuotePitchListQuerySchema.safeParse(req.query);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
@@ -30,9 +31,9 @@ router.get("/orgs/quote-pitches", async (req, res) => {
     .offset(offsetN);
 
   res.json({ quotePitches: rows });
-});
+}));
 
-router.get("/orgs/quote-pitches/:id", async (req, res) => {
+router.get("/orgs/quote-pitches/:id", asyncHandler(async (req, res) => {
   const orgId = req.orgId!;
   const { id } = req.params;
   const [row] = await db
@@ -45,6 +46,6 @@ router.get("/orgs/quote-pitches/:id", async (req, res) => {
     return;
   }
   res.json({ quotePitch: row });
-});
+}));
 
 export default router;
