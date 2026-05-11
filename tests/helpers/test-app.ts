@@ -2,40 +2,62 @@ import "express-async-errors";
 import express from "express";
 import cors from "cors";
 import healthRoutes from "../../src/routes/health.js";
-import { createExpertQuoteRunsRouter, type ExpertQuoteRunsDeps } from "../../src/routes/expert-quote-runs.js";
+import {
+  createOpportunitiesNextRouter,
+  type OpportunitiesNextDeps,
+} from "../../src/routes/opportunities-next.js";
+import {
+  createOpportunityReplyRouter,
+  type OpportunityReplyDeps,
+} from "../../src/routes/opportunity-reply.js";
 import quoteRequestsRoutes from "../../src/routes/quote-requests.js";
 import quotePitchesRoutes from "../../src/routes/quote-pitches.js";
-import { createSyncTrackingRouter, type SyncTrackingDeps } from "../../src/routes/sync-tracking.js";
+import processInboundEmailsRoutes from "../../src/routes/process-inbound-emails.js";
 import inboundEmailRoutes from "../../src/routes/webhooks/inbound-email.js";
 import {
   apiKeyAuth,
   requireOrgId,
-  requireServiceAuth,
   withRunTracking,
 } from "../../src/middleware/auth.js";
+import { hmacVerify } from "../../src/middleware/hmac-verify.js";
 
 export interface TestAppDeps {
-  expertQuoteRunsDeps?: ExpertQuoteRunsDeps;
-  syncTrackingDeps?: SyncTrackingDeps;
+  opportunitiesNextDeps?: OpportunitiesNextDeps;
+  opportunityReplyDeps?: OpportunityReplyDeps;
+  /**
+   * Skip HMAC verification on /webhooks/inbound-email when tests want to
+   * exercise the route without computing a signature.
+   */
+  skipHmacVerify?: boolean;
 }
 
 export function createTestApp(deps: TestAppDeps = {}) {
   const app = express();
   app.use(cors());
-  app.use(express.json({ limit: "10mb" }));
+  app.use(
+    express.json({
+      limit: "10mb",
+      verify: (req, _res, buf) => {
+        (req as express.Request).rawBody = Buffer.from(buf);
+      },
+    })
+  );
   app.use(healthRoutes);
 
-  app.use(
-    "/webhooks",
-    requireServiceAuth(["email-gateway-service"])
-  );
+  if (!deps.skipHmacVerify) {
+    app.use(
+      "/webhooks/inbound-email",
+      hmacVerify({ secretEnvVar: "JQS_INBOUND_HMAC_SECRET" })
+    );
+  }
   app.use(inboundEmailRoutes);
 
   app.use("/internal", apiKeyAuth);
-  app.use(createSyncTrackingRouter(deps.syncTrackingDeps));
+  app.use(processInboundEmailsRoutes);
 
   app.use("/orgs", apiKeyAuth, requireOrgId, withRunTracking);
-  app.use(createExpertQuoteRunsRouter(deps.expertQuoteRunsDeps));
+  app.use(createOpportunitiesNextRouter(deps.opportunitiesNextDeps));
+  app.use(createOpportunityReplyRouter(deps.opportunityReplyDeps));
   app.use(quoteRequestsRoutes);
   app.use(quotePitchesRoutes);
 

@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "Journalists Quotes Service",
-    "description": "Automates expert-quote outreach via Featured.com Premium API. One run = sync questions, score against brand context, pick top 1, generate pitch, submit answer.",
+    "description": "Three workflows: (WF1) email inbound HARO ingestion -> silver+gold; (WF2) /orgs/opportunities/next merges silver email opps with live Featured fetch + RAG scoring; (WF3) /orgs/opportunities/{id}/reply dispatches via Featured submitAnswer or email-gateway send.",
     "version": "1.0.0"
   },
   "servers": [
@@ -19,47 +19,92 @@
       }
     },
     "schemas": {
-      "ExpertQuoteRunResponse": {
-        "type": "object",
-        "properties": {
-          "status": {
-            "type": "string",
-            "enum": [
-              "submitted",
-              "no_match",
-              "rate_limited",
-              "error"
+      "OpportunityNextResponse": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "match"
+                ]
+              },
+              "opportunityId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "ingestionChannel": {
+                "type": "string"
+              },
+              "featuredQuestionId": {
+                "type": "integer",
+                "nullable": true
+              },
+              "mediaOutlet": {
+                "type": "string",
+                "nullable": true
+              },
+              "journalistName": {
+                "type": "string",
+                "nullable": true
+              },
+              "opportunityText": {
+                "type": "string"
+              },
+              "deadline": {
+                "type": "string",
+                "nullable": true
+              },
+              "pitchUrl": {
+                "type": "string",
+                "nullable": true
+              },
+              "pitchEmail": {
+                "type": "string",
+                "nullable": true
+              },
+              "score": {
+                "type": "number"
+              },
+              "whyRelevant": {
+                "type": "string",
+                "nullable": true
+              }
+            },
+            "required": [
+              "status",
+              "opportunityId",
+              "provider",
+              "ingestionChannel",
+              "featuredQuestionId",
+              "mediaOutlet",
+              "journalistName",
+              "opportunityText",
+              "deadline",
+              "pitchUrl",
+              "pitchEmail",
+              "score",
+              "whyRelevant"
             ]
           },
-          "quoteRequestId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "pitchId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "retryAfter": {
-            "type": "integer"
-          },
-          "error": {
-            "type": "string"
-          },
-          "missing": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "balance_cents": {
-            "type": "integer"
-          },
-          "required_cents": {
-            "type": "integer"
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "no_match"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
           }
-        },
-        "required": [
-          "status"
         ]
       },
       "ErrorResponse": {
@@ -73,7 +118,7 @@
           "error"
         ]
       },
-      "ExpertQuoteRunRequest": {
+      "OpportunityNextRequest": {
         "type": "object",
         "properties": {
           "campaignId": {
@@ -88,6 +133,104 @@
         "required": [
           "campaignId",
           "brandId"
+        ]
+      },
+      "OpportunityReplyResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "submitted",
+              "already_submitted",
+              "rate_limited",
+              "error"
+            ]
+          },
+          "pitchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "deliveryMethod": {
+            "type": "string",
+            "enum": [
+              "featured_api",
+              "email_reply"
+            ]
+          },
+          "outboundMessageId": {
+            "type": "string",
+            "nullable": true
+          },
+          "featuredQuestionId": {
+            "type": "integer",
+            "nullable": true
+          },
+          "retryAfter": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "OpportunityReplyRequest": {
+        "type": "object",
+        "properties": {
+          "pitchContent": {
+            "type": "string",
+            "minLength": 1
+          },
+          "brandId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "campaignId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pitchContent",
+          "brandId",
+          "campaignId"
+        ]
+      },
+      "ProcessInboundEmailsResponse": {
+        "type": "object",
+        "properties": {
+          "processed": {
+            "type": "integer"
+          },
+          "parsed": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "integer"
+          },
+          "silverRowsInserted": {
+            "type": "integer"
+          },
+          "goldClustersCreated": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "processed",
+          "parsed",
+          "failed",
+          "skipped",
+          "silverRowsInserted",
+          "goldClustersCreated"
         ]
       },
       "ProviderQuoteRequest": {
@@ -204,23 +347,11 @@
           },
           "totalPitched": {
             "type": "integer"
-          },
-          "totalSelected": {
-            "type": "integer"
-          },
-          "totalPublished": {
-            "type": "integer"
-          },
-          "totalNotSelected": {
-            "type": "integer"
           }
         },
         "required": [
           "totalRequests",
-          "totalPitched",
-          "totalSelected",
-          "totalPublished",
-          "totalNotSelected"
+          "totalPitched"
         ]
       },
       "QuotePitch": {
@@ -464,25 +595,6 @@
           "From",
           "To"
         ]
-      },
-      "SyncTrackingResponse": {
-        "type": "object",
-        "properties": {
-          "selectedUpdated": {
-            "type": "integer"
-          },
-          "publishedUpdated": {
-            "type": "integer"
-          },
-          "notSelectedUpdated": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "selectedUpdated",
-          "publishedUpdated",
-          "notSelectedUpdated"
-        ]
       }
     },
     "parameters": {}
@@ -521,9 +633,9 @@
         }
       }
     },
-    "/orgs/expert-quote-runs": {
+    "/orgs/opportunities/next": {
       "post": {
-        "summary": "Run one full expert-quote loop for the given campaign+brand",
+        "summary": "Pick the next best journalist opportunity for the (campaign, brand). Merges silver email-sourced rows with a live fetch of Featured.com opportunities, scores via RAG, returns top above SCORE_THRESHOLD.",
         "security": [
           {
             "ApiKeyAuth": []
@@ -544,18 +656,18 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ExpertQuoteRunRequest"
+                "$ref": "#/components/schemas/OpportunityNextRequest"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Run result",
+            "description": "Top opportunity or no_match",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ExpertQuoteRunResponse"
+                  "$ref": "#/components/schemas/OpportunityNextResponse"
                 }
               }
             }
@@ -570,22 +682,83 @@
               }
             }
           },
-          "402": {
-            "description": "Insufficient credits in content-generation-service",
+          "502": {
+            "description": "Upstream service unavailable (key-service, Featured)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ExpertQuoteRunResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/opportunities/{id}/reply": {
+      "post": {
+        "summary": "Submit a pitch reply for the given opportunity. Dispatches to Featured submitAnswer (provider=featured) or email-gateway-service /orgs/send (other providers, e.g. haro).",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-org-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpportunityReplyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Pitch dispatched (or idempotent already-submitted)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpportunityReplyResponse"
                 }
               }
             }
           },
-          "424": {
-            "description": "Required precondition failed (brand fields missing or content-generation template missing)",
+          "400": {
+            "description": "Validation error or unsupported opportunity",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ExpertQuoteRunResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Opportunity not found for this org",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -596,6 +769,28 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/process-inbound-emails": {
+      "post": {
+        "summary": "Drain pending inbound_emails rows, dispatch to parser by provider, insert silver rows + fingerprint cluster",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Processing result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessInboundEmailsResponse"
                 }
               }
             }
@@ -942,19 +1137,14 @@
     "/webhooks/inbound-email": {
       "post": {
         "summary": "Receive inbound email forwarded by email-gateway-service (raw Postmark payload)",
-        "description": "Service-to-service endpoint. Headers required: x-api-key (shared with caller), x-service-name=email-gateway-service. Idempotent on Postmark MessageID.",
-        "security": [
-          {
-            "ApiKeyAuth": []
-          }
-        ],
+        "description": "HMAC-verified push endpoint. Header `x-eg-signature: t=<unix_seconds>,v1=<hex sha256(t + \".\" + body, secret)>` required (300s replay window). Idempotent on Postmark MessageID.",
         "parameters": [
           {
             "schema": {
               "type": "string"
             },
             "required": true,
-            "name": "x-service-name",
+            "name": "x-eg-signature",
             "in": "header"
           }
         ],
@@ -989,33 +1179,11 @@
             }
           },
           "401": {
-            "description": "Unauthorized",
+            "description": "Invalid HMAC signature",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/internal/sync-tracking": {
-      "post": {
-        "summary": "Poll Featured /selected /published /not-selected and reconcile",
-        "security": [
-          {
-            "ApiKeyAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Sync results",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SyncTrackingResponse"
                 }
               }
             }
