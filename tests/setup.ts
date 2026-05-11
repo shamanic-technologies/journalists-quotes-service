@@ -12,3 +12,6 @@ process.env.INBOUND_ALIAS_ROUTING = JSON.stringify([
   { alias: "sos@inbox.test", provider: "sos" },
   { alias: "qwoted@inbox.test", provider: "qwoted" },
 ]);
+process.env.JQS_INBOUND_HMAC_SECRET = "test-hmac-secret";
+process.env.EMAIL_GATEWAY_SERVICE_URL = "http://email-gateway.test";
+process.env.EMAIL_GATEWAY_SERVICE_API_KEY = "test-email-gateway-key";

@@ -36,14 +36,7 @@ router.get("/orgs/quote-requests/stats", async (req, res) => {
 
   res.json({
     totalRequests: total ?? 0,
-    totalPitched:
-      (byStatus.submitted ?? 0) +
-      (byStatus.selected ?? 0) +
-      (byStatus.published ?? 0) +
-      (byStatus.not_selected ?? 0),
-    totalSelected: byStatus.selected ?? 0,
-    totalPublished: byStatus.published ?? 0,
-    totalNotSelected: byStatus.not_selected ?? 0,
+    totalPitched: byStatus.submitted ?? 0,
   });
 });
 

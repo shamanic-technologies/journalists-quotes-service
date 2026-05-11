@@ -11,17 +11,18 @@ import { dirname, join } from "path";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { db } from "./db/index.js";
 import healthRoutes from "./routes/health.js";
-import expertQuoteRunsRoutes from "./routes/expert-quote-runs.js";
+import opportunitiesNextRoutes from "./routes/opportunities-next.js";
+import opportunityReplyRoutes from "./routes/opportunity-reply.js";
 import quoteRequestsRoutes from "./routes/quote-requests.js";
 import quotePitchesRoutes from "./routes/quote-pitches.js";
-import syncTrackingRoutes from "./routes/sync-tracking.js";
+import processInboundEmailsRoutes from "./routes/process-inbound-emails.js";
 import inboundEmailRoutes from "./routes/webhooks/inbound-email.js";
 import {
   apiKeyAuth,
   requireOrgId,
-  requireServiceAuth,
   withRunTracking,
 } from "./middleware/auth.js";
+import { hmacVerify } from "./middleware/hmac-verify.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -30,7 +31,16 @@ const app = express();
 const PORT = process.env.PORT || 3050;
 
 app.use(cors());
-app.use(express.json({ limit: "10mb" }));
+// Capture raw bytes alongside JSON parsing so HMAC verification can
+// recompute the signature over the exact bytes that were signed.
+app.use(
+  express.json({
+    limit: "10mb",
+    verify: (req, _res, buf) => {
+      (req as express.Request).rawBody = Buffer.from(buf);
+    },
+  })
+);
 
 const openapiPath = join(__dirname, "..", "openapi.json");
 app.get("/openapi.json", (_req, res) => {
@@ -45,20 +55,21 @@ app.get("/openapi.json", (_req, res) => {
 
 app.use(healthRoutes);
 
-// /webhooks/* routes (service-to-service auth, called by sibling services)
+// /webhooks/inbound-email — HMAC-verified push from email-gateway-service
 app.use(
-  "/webhooks",
-  requireServiceAuth(["email-gateway-service"])
+  "/webhooks/inbound-email",
+  hmacVerify({ secretEnvVar: "JQS_INBOUND_HMAC_SECRET" })
 );
 app.use(inboundEmailRoutes);
 
 // /internal/* routes (api key only)
 app.use("/internal", apiKeyAuth);
-app.use(syncTrackingRoutes);
+app.use(processInboundEmailsRoutes);
 
 // /orgs/* routes (api key + org id + run tracking)
 app.use("/orgs", apiKeyAuth, requireOrgId, withRunTracking);
-app.use(expertQuoteRunsRoutes);
+app.use(opportunitiesNextRoutes);
+app.use(opportunityReplyRoutes);
 app.use(quoteRequestsRoutes);
 app.use(quotePitchesRoutes);
 

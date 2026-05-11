@@ -15,7 +15,7 @@ const document = generator.generateDocument({
   info: {
     title: "Journalists Quotes Service",
     description:
-      "Automates expert-quote outreach via Featured.com Premium API. One run = sync questions, score against brand context, pick top 1, generate pitch, submit answer.",
+      "Three workflows: (WF1) email inbound HARO ingestion -> silver+gold; (WF2) /orgs/opportunities/next merges silver email opps with live Featured fetch + RAG scoring; (WF3) /orgs/opportunities/{id}/reply dispatches via Featured submitAnswer or email-gateway send.",
     version: "1.0.0",
   },
   servers: [
