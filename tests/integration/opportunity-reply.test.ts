@@ -1,0 +1,257 @@
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  beforeAll,
+  afterAll,
+  vi,
+} from "vitest";
+import request from "supertest";
+import {
+  createTestApp,
+  AUTH_HEADERS,
+  TEST_BRAND,
+  TEST_CAMPAIGN_A,
+  TEST_ORG_A,
+} from "../helpers/test-app.js";
+import { cleanTestData, closeDb } from "../helpers/test-db.js";
+import { db } from "../../src/db/index.js";
+import {
+  providerQuoteRequests,
+  quotePitches,
+} from "../../src/db/schema.js";
+import { eq } from "drizzle-orm";
+import {
+  buildMockClient,
+  createMockState,
+  type MockFeaturedState,
+} from "../helpers/mock-featured.js";
+import { _resetFeaturedClientState } from "../../src/lib/featured-client.js";
+import { SHARED_EMAIL_ORG_ID } from "../../src/lib/inbound/process.js";
+
+vi.mock("../../src/lib/key-service-client.js", () => ({
+  getFeaturedCredentials: vi.fn(async () => ({
+    username: "mock-u",
+    password: "mock-p",
+  })),
+  KeyServiceUnavailableError: class extends Error {},
+}));
+
+vi.mock("../../src/lib/brand-client.js", () => ({
+  getBrand: vi.fn(async (brandId: string) => ({
+    id: brandId,
+    name: "Test Brand",
+  })),
+  getBrandLogo: vi.fn(async () => ({
+    id: "logo-1",
+    permanentUrl: "http://cdn.test/logo.png",
+    category: "logo",
+  })),
+}));
+
+// Stub fetch for email-gateway-client `sendTransactionalEmail` calls.
+type FetchMock = ReturnType<typeof vi.fn>;
+let fetchMock: FetchMock;
+
+const fetchLogoBytes = vi.fn(async () => ({
+  bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xe0]),
+  contentType: "image/png",
+  filename: "logo.png",
+}));
+
+let state: MockFeaturedState;
+
+describe("POST /orgs/opportunities/:id/reply", () => {
+  beforeAll(async () => {
+    await cleanTestData();
+  });
+  beforeEach(async () => {
+    _resetFeaturedClientState();
+    await cleanTestData();
+    state = createMockState();
+    fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          success: true,
+          provider: "transactional",
+          messageId: "outbound-msg-123",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterAll(async () => {
+    await cleanTestData();
+    await closeDb();
+  });
+
+  function app() {
+    return createTestApp({
+      opportunityReplyDeps: {
+        buildClient: buildMockClient(state),
+        fetchLogoBytes,
+      },
+    });
+  }
+
+  async function seedFeaturedSilver(featuredQuestionId: number) {
+    const [row] = await db
+      .insert(providerQuoteRequests)
+      .values({
+        provider: "featured",
+        ingestionChannel: "api",
+        externalId: String(featuredQuestionId),
+        featuredQuestionId,
+        opportunityText: "Featured demand",
+        mediaOutlet: "Featured Outlet",
+        orgId: TEST_ORG_A,
+      })
+      .returning();
+    return row;
+  }
+
+  async function seedHaroSilver(externalId: string) {
+    const [row] = await db
+      .insert(providerQuoteRequests)
+      .values({
+        provider: "haro",
+        ingestionChannel: "email",
+        externalId,
+        opportunityText: "HARO query about ergonomics",
+        mediaOutlet: "Lifehacker",
+        journalistName: "Jane Doe",
+        pitchEmail: `reply+${externalId}@helpareporter.com`,
+        orgId: SHARED_EMAIL_ORG_ID,
+      })
+      .returning();
+    return row;
+  }
+
+  it("dispatches Featured opportunity via FeaturedClient.submitAnswer", async () => {
+    const silver = await seedFeaturedSilver(5050);
+    const pitchContent = "P".repeat(200);
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({
+        pitchContent,
+        brandId: TEST_BRAND,
+        campaignId: TEST_CAMPAIGN_A,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("submitted");
+    expect(res.body.deliveryMethod).toBe("featured_api");
+    expect(state.submitted).toHaveLength(1);
+    expect(state.submitted[0].featuredQuestionId).toBe(5050);
+    expect(state.submitted[0].answer).toBe(pitchContent);
+
+    const pitches = await db
+      .select()
+      .from(quotePitches)
+      .where(eq(quotePitches.id, res.body.pitchId));
+    expect(pitches[0].status).toBe("submitted");
+    expect(pitches[0].deliveryMethod).toBe("featured_api");
+  });
+
+  it("dispatches HARO opportunity via email-gateway /orgs/send", async () => {
+    const silver = await seedHaroSilver("uuid-haro-1");
+    const pitchContent = "Pitching this expert. " + "P".repeat(120);
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({
+        pitchContent,
+        brandId: TEST_BRAND,
+        campaignId: TEST_CAMPAIGN_A,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("submitted");
+    expect(res.body.deliveryMethod).toBe("email_reply");
+    expect(res.body.outboundMessageId).toBe("outbound-msg-123");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const fetchArgs = fetchMock.mock.calls[0];
+    expect(String(fetchArgs[0])).toContain("/orgs/send");
+    const sentBody = JSON.parse(fetchArgs[1].body as string);
+    expect(sentBody.to).toBe("reply+uuid-haro-1@helpareporter.com");
+    expect(sentBody.recipientFirstName).toBe("Jane");
+    expect(sentBody.recipientLastName).toBe("Doe");
+    expect(sentBody.recipientCompany).toBe("Lifehacker");
+    expect(sentBody.textBody).toBe(pitchContent);
+
+    const pitches = await db.select().from(quotePitches);
+    expect(pitches).toHaveLength(1);
+    expect(pitches[0].deliveryMethod).toBe("email_reply");
+    expect(pitches[0].outboundMessageId).toBe("outbound-msg-123");
+    expect(pitches[0].deliveryTarget).toBe(
+      "reply+uuid-haro-1@helpareporter.com"
+    );
+  });
+
+  it("returns 404 for opportunity not found", async () => {
+    const res = await request(app())
+      .post(`/orgs/opportunities/00000000-0000-0000-0000-00000000dead/reply`)
+      .set(AUTH_HEADERS)
+      .send({
+        pitchContent: "x".repeat(200),
+        brandId: TEST_BRAND,
+        campaignId: TEST_CAMPAIGN_A,
+      });
+    expect(res.status).toBe(404);
+  });
+
+  it("is idempotent: second call with same campaign returns already_submitted", async () => {
+    const silver = await seedHaroSilver("uuid-haro-2");
+    const body = {
+      pitchContent: "x".repeat(200),
+      brandId: TEST_BRAND,
+      campaignId: TEST_CAMPAIGN_A,
+    };
+
+    const first = await request(app())
+      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send(body);
+    expect(first.body.status).toBe("submitted");
+
+    const second = await request(app())
+      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send(body);
+    expect(second.body.status).toBe("already_submitted");
+    expect(second.body.pitchId).toBe(first.body.pitchId);
+
+    const pitches = await db.select().from(quotePitches);
+    expect(pitches).toHaveLength(1);
+  });
+
+  it("returns 502 + error pitch row when email-gateway fails", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ error: "internal" }),
+        { status: 503, headers: { "content-type": "application/json" } }
+      )
+    );
+    const silver = await seedHaroSilver("uuid-haro-3");
+    const res = await request(app())
+      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({
+        pitchContent: "x".repeat(200),
+        brandId: TEST_BRAND,
+        campaignId: TEST_CAMPAIGN_A,
+      });
+    expect(res.status).toBe(502);
+    expect(res.body.status).toBe("error");
+
+    const pitches = await db.select().from(quotePitches);
+    expect(pitches).toHaveLength(1);
+    expect(pitches[0].status).toBe("error");
+    expect(pitches[0].deliveryMethod).toBe("email_reply");
+  });
+});

@@ -41,14 +41,6 @@ export interface FeaturedSubmittedResponse {
   page?: number;
 }
 
-export interface FeaturedTrackingItem {
-  featuredQuestionId: number;
-  profileId?: number;
-  articleUrl?: string;
-  status?: string;
-  [key: string]: unknown;
-}
-
 export class FeaturedRateLimitError extends Error {
   retryAfter: number;
   constructor(retryAfter: number) {
@@ -267,18 +259,6 @@ export class FeaturedClient {
     return this.request<FeaturedSubmittedResponse>(
       `/submitted?page=${page}`
     );
-  }
-
-  listSelected(): Promise<FeaturedTrackingItem[]> {
-    return this.request<FeaturedTrackingItem[]>("/selected");
-  }
-
-  listPublished(): Promise<FeaturedTrackingItem[]> {
-    return this.request<FeaturedTrackingItem[]>("/published");
-  }
-
-  listNotSelected(): Promise<FeaturedTrackingItem[]> {
-    return this.request<FeaturedTrackingItem[]>("/not-selected");
   }
 
   addSeats(quantity: number): Promise<unknown> {

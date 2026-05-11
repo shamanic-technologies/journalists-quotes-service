@@ -89,9 +89,6 @@ export const QuoteRequestStatsSchema = z
   .object({
     totalRequests: z.number().int(),
     totalPitched: z.number().int(),
-    totalSelected: z.number().int(),
-    totalPublished: z.number().int(),
-    totalNotSelected: z.number().int(),
   })
   .openapi("QuoteRequestStats");
 
@@ -159,32 +156,74 @@ export const QuotePitchListQuerySchema = z.object({
   offset: z.string().optional(),
 });
 
-// ==================== Expert Quote Run Schemas ====================
+// ==================== Opportunity Workflow Schemas ====================
 
-export const ExpertQuoteRunRequestSchema = z
+export const OpportunityNextRequestSchema = z
   .object({
     campaignId: z.string().uuid(),
     brandId: z.string().uuid(),
   })
-  .openapi("ExpertQuoteRunRequest");
+  .openapi("OpportunityNextRequest");
 
-export const ExpertQuoteRunResponseSchema = z
+export const OpportunityNextResponseSchema = z
+  .union([
+    z.object({
+      status: z.literal("match"),
+      opportunityId: z.string().uuid(),
+      provider: z.string(),
+      ingestionChannel: z.string(),
+      featuredQuestionId: z.number().int().nullable(),
+      mediaOutlet: z.string().nullable(),
+      journalistName: z.string().nullable(),
+      opportunityText: z.string(),
+      deadline: z.string().nullable(),
+      pitchUrl: z.string().nullable(),
+      pitchEmail: z.string().nullable(),
+      score: z.number(),
+      whyRelevant: z.string().nullable(),
+    }),
+    z.object({ status: z.literal("no_match") }),
+  ])
+  .openapi("OpportunityNextResponse");
+
+export const OpportunityReplyRequestSchema = z
+  .object({
+    pitchContent: z.string().min(1),
+    brandId: z.string().uuid(),
+    campaignId: z.string().uuid(),
+    subject: z.string().optional(),
+  })
+  .openapi("OpportunityReplyRequest");
+
+export const OpportunityReplyResponseSchema = z
   .object({
     status: z.enum([
       "submitted",
-      "no_match",
+      "already_submitted",
       "rate_limited",
       "error",
     ]),
-    quoteRequestId: z.string().uuid().optional(),
     pitchId: z.string().uuid().optional(),
+    deliveryMethod: z.enum(["featured_api", "email_reply"]).optional(),
+    outboundMessageId: z.string().nullable().optional(),
+    featuredQuestionId: z.number().int().nullable().optional(),
     retryAfter: z.number().int().optional(),
     error: z.string().optional(),
-    missing: z.array(z.string()).optional(),
-    balance_cents: z.number().int().optional(),
-    required_cents: z.number().int().optional(),
   })
-  .openapi("ExpertQuoteRunResponse");
+  .openapi("OpportunityReplyResponse");
+
+// ==================== Internal Worker Schemas ====================
+
+export const ProcessInboundEmailsResponseSchema = z
+  .object({
+    processed: z.number().int(),
+    parsed: z.number().int(),
+    failed: z.number().int(),
+    skipped: z.number().int(),
+    silverRowsInserted: z.number().int(),
+    goldClustersCreated: z.number().int(),
+  })
+  .openapi("ProcessInboundEmailsResponse");
 
 // ==================== Inbound Email Webhook Schemas ====================
 
@@ -209,6 +248,8 @@ export const PostmarkInboundWebhookSchema = z
   .passthrough()
   .openapi("PostmarkInboundWebhook");
 
+export type PostmarkInboundWebhook = z.infer<typeof PostmarkInboundWebhookSchema>;
+
 export const InboundEmailAcceptedResponseSchema = z
   .object({
     accepted: z.boolean(),
@@ -216,16 +257,6 @@ export const InboundEmailAcceptedResponseSchema = z
     deduplicated: z.boolean().optional(),
   })
   .openapi("InboundEmailAcceptedResponse");
-
-// ==================== Sync Tracking Schemas ====================
-
-export const SyncTrackingResponseSchema = z
-  .object({
-    selectedUpdated: z.number().int(),
-    publishedUpdated: z.number().int(),
-    notSelectedUpdated: z.number().int(),
-  })
-  .openapi("SyncTrackingResponse");
 
 // ==================== Path Registrations ====================
 
@@ -255,44 +286,85 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
-  path: "/orgs/expert-quote-runs",
-  summary: "Run one full expert-quote loop for the given campaign+brand",
+  path: "/orgs/opportunities/next",
+  summary:
+    "Pick the next best journalist opportunity for the (campaign, brand). Merges silver email-sourced rows with a live fetch of Featured.com opportunities, scores via RAG, returns top above SCORE_THRESHOLD.",
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
     headers: orgHeaders,
     body: {
       content: {
-        "application/json": { schema: ExpertQuoteRunRequestSchema },
+        "application/json": { schema: OpportunityNextRequestSchema },
       },
     },
   },
   responses: {
     200: {
-      description: "Run result",
+      description: "Top opportunity or no_match",
       content: {
-        "application/json": { schema: ExpertQuoteRunResponseSchema },
+        "application/json": { schema: OpportunityNextResponseSchema },
       },
     },
     400: {
       description: "Validation error",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
-    402: {
-      description: "Insufficient credits in content-generation-service",
+    502: {
+      description: "Upstream service unavailable (key-service, Featured)",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/orgs/opportunities/{id}/reply",
+  summary:
+    "Submit a pitch reply for the given opportunity. Dispatches to Featured submitAnswer (provider=featured) or email-gateway-service /orgs/send (other providers, e.g. haro).",
+  security: [{ [apiKeyAuth.name]: [] }],
+  request: {
+    headers: orgHeaders,
+    params: z.object({ id: z.string().uuid() }),
+    body: {
       content: {
-        "application/json": { schema: ExpertQuoteRunResponseSchema },
+        "application/json": { schema: OpportunityReplyRequestSchema },
       },
     },
-    424: {
-      description:
-        "Required precondition failed (brand fields missing or content-generation template missing)",
+  },
+  responses: {
+    200: {
+      description: "Pitch dispatched (or idempotent already-submitted)",
       content: {
-        "application/json": { schema: ExpertQuoteRunResponseSchema },
+        "application/json": { schema: OpportunityReplyResponseSchema },
       },
+    },
+    400: {
+      description: "Validation error or unsupported opportunity",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    404: {
+      description: "Opportunity not found for this org",
+      content: { "application/json": { schema: ErrorResponseSchema } },
     },
     502: {
       description: "Upstream service unavailable",
       content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/process-inbound-emails",
+  summary:
+    "Drain pending inbound_emails rows, dispatch to parser by provider, insert silver rows + fingerprint cluster",
+  security: [{ [apiKeyAuth.name]: [] }],
+  responses: {
+    200: {
+      description: "Processing result",
+      content: {
+        "application/json": { schema: ProcessInboundEmailsResponseSchema },
+      },
     },
   },
 });
@@ -410,11 +482,10 @@ registry.registerPath({
   summary:
     "Receive inbound email forwarded by email-gateway-service (raw Postmark payload)",
   description:
-    "Service-to-service endpoint. Headers required: x-api-key (shared with caller), x-service-name=email-gateway-service. Idempotent on Postmark MessageID.",
-  security: [{ [apiKeyAuth.name]: [] }],
+    "HMAC-verified push endpoint. Header `x-eg-signature: t=<unix_seconds>,v1=<hex sha256(t + \".\" + body, secret)>` required (300s replay window). Idempotent on Postmark MessageID.",
   request: {
     headers: z.object({
-      "x-service-name": z.string(),
+      "x-eg-signature": z.string(),
     }),
     body: {
       content: {
@@ -434,23 +505,8 @@ registry.registerPath({
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
     401: {
-      description: "Unauthorized",
+      description: "Invalid HMAC signature",
       content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-  },
-});
-
-registry.registerPath({
-  method: "post",
-  path: "/internal/sync-tracking",
-  summary: "Poll Featured /selected /published /not-selected and reconcile",
-  security: [{ [apiKeyAuth.name]: [] }],
-  responses: {
-    200: {
-      description: "Sync results",
-      content: {
-        "application/json": { schema: SyncTrackingResponseSchema },
-      },
     },
   },
 });
