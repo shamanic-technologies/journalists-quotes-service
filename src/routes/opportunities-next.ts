@@ -13,8 +13,15 @@ import {
   type FeaturedClientOptions,
 } from "../lib/featured-client.js";
 import { getFeaturedCredentials } from "../lib/key-service-client.js";
+import {
+  authorizeCredit,
+  BillingServiceError,
+} from "../lib/billing-client.js";
+import { addCosts } from "../lib/runs-client.js";
 import { ragScore } from "../lib/chat-client.js";
 import { SHARED_EMAIL_ORG_ID } from "../lib/inbound/process.js";
+
+const FEATURED_OPP_FETCH_COST = "featured-api-opportunity-fetch";
 
 const SCORE_THRESHOLD = Number(process.env.SCORE_THRESHOLD ?? "0.5");
 
@@ -54,12 +61,44 @@ export function createOpportunitiesNextRouter(
     const userId = req.userId;
     const runId = req.runId;
 
+    // Authorize the Featured opportunity fetch with billing-service before
+    // making any paid external call. 402 if the org cannot cover the cost.
+    try {
+      const auth = await authorizeCredit({
+        items: [{ costName: FEATURED_OPP_FETCH_COST, quantity: 1 }],
+        description: "featured opportunity fetch",
+        orgId,
+        userId,
+        runId,
+        brandId,
+        campaignId,
+        featureSlug: req.featureSlug,
+        workflowSlug: req.workflowSlug,
+      });
+      if (!auth.sufficient) {
+        res.status(402).json({
+          error: "insufficient credit for featured opportunity fetch",
+          balance_cents: auth.balance_cents,
+          required_cents: auth.required_cents,
+        });
+        return;
+      }
+    } catch (err) {
+      const status = err instanceof BillingServiceError ? 502 : 500;
+      res.status(status).json({ error: (err as Error).message });
+      return;
+    }
+
     // Live-fetch Featured opportunities and upsert as silver rows (write-through
     // cache). Featured failures are fatal: we can't make a fair "no_match"
     // decision without seeing Featured's catalog.
     let credentials: FeaturedCredentials;
     try {
-      credentials = await getFeaturedCredentials(orgId, userId, runId);
+      credentials = await getFeaturedCredentials({
+        callerMethod: "POST",
+        callerPath: "/orgs/opportunities/next",
+        runId,
+      });
     } catch (err) {
       const name = (err as Error).name;
       const message = (err as Error).message;
@@ -80,6 +119,38 @@ export function createOpportunitiesNextRouter(
         error: `Featured listOpportunities failed: ${(err as Error).message}`,
       });
       return;
+    }
+
+    // Record the actual cost now that the Featured call succeeded. Failure
+    // here returns 500 so the upstream workflow retries instead of silently
+    // dropping the cost record.
+    if (runId) {
+      try {
+        await addCosts(
+          runId,
+          [
+            {
+              costName: FEATURED_OPP_FETCH_COST,
+              costSource: "platform",
+              quantity: 1,
+              status: "actual",
+            },
+          ],
+          {
+            orgId,
+            userId,
+            brandId,
+            campaignId,
+            featureSlug: req.featureSlug,
+            workflowSlug: req.workflowSlug,
+          }
+        );
+      } catch (err) {
+        res.status(500).json({
+          error: `failed to record featured opportunity fetch cost: ${(err as Error).message}`,
+        });
+        return;
+      }
     }
 
     if (featuredOpps.length > 0) {
