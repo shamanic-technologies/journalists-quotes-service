@@ -30,10 +30,9 @@ The server boots on `PORT` (default `3050`) and runs Drizzle migrations automati
 | `PORT` | Listen port (default `3050`) |
 | `SENTRY_DSN` | Optional Sentry DSN |
 | `SCORE_THRESHOLD` | Float, default `0.5` — minimum RAG score to consider an opportunity matchable |
-| `FEATURED_USERNAME` / `FEATURED_PASSWORD` | TODO(featured-key-provider) fallback creds until key-service `featured` provider lands |
 | `FEATURED_API_BASE_URL` | Default `https://featured.com/api/external-users` |
 | `RUNS_SERVICE_URL` / `RUNS_SERVICE_API_KEY` | Run tracking |
-| `KEY_SERVICE_URL` / `KEY_SERVICE_API_KEY` | Featured creds resolution (TODO: provider) |
+| `KEY_SERVICE_URL` / `KEY_SERVICE_API_KEY` | Featured creds resolution — reads two scalar platform keys (`featured-username`, `featured-password`) |
 | `BRAND_SERVICE_URL` / `BRAND_SERVICE_API_KEY` | Brand metadata + logo (Featured profile bootstrap) |
 | `CHAT_SERVICE_URL` / `CHAT_SERVICE_API_KEY` | RAG scoring (TODO: endpoint) |
 | `EMAIL_GATEWAY_SERVICE_URL` / `EMAIL_GATEWAY_SERVICE_API_KEY` | WF3 email_reply dispatch via `POST /orgs/send` |
@@ -106,7 +105,6 @@ Every `/orgs/*` request creates its own child run via `runs-service`:
 
 These mark integration points blocked on parallel tasks:
 
-- `key-service-client.getFeaturedCredentials`: TODO(featured-key-provider) — falls back to `FEATURED_USERNAME` / `FEATURED_PASSWORD` env vars when key-service returns 404 or is unset.
 - `chat-client.ragScore`: TODO(rag-endpoint) — falls back to recency-based scoring when chat-service `/orgs/rag/score` returns 404 or is unset.
 
 Remove each fallback once the corresponding upstream lands.
