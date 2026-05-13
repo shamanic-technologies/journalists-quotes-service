@@ -11,6 +11,11 @@ import {
 } from "../lib/featured-client.js";
 import { getFeaturedCredentials } from "../lib/key-service-client.js";
 import {
+  authorizeCredit,
+  BillingServiceError,
+} from "../lib/billing-client.js";
+import { addCosts } from "../lib/runs-client.js";
+import {
   ensureFeaturedProfile,
   type FetchLogoBytes,
 } from "../lib/featured-profile-bootstrap.js";
@@ -19,6 +24,8 @@ import {
   EmailGatewayError,
 } from "../lib/email-gateway-client.js";
 import { SHARED_EMAIL_ORG_ID } from "../lib/inbound/process.js";
+
+const FEATURED_PITCH_SUBMIT_COST = "featured-api-pitch-submit";
 
 const PARAMS_SCHEMA = z.object({ id: z.string().uuid() });
 
@@ -192,6 +199,7 @@ async function handleFeaturedReply(args: {
   fetchLogoBytes?: FetchLogoBytes;
 }) {
   const {
+    req,
     res,
     opportunity,
     pitchContent,
@@ -213,9 +221,39 @@ async function handleFeaturedReply(args: {
     return;
   }
 
+  try {
+    const auth = await authorizeCredit({
+      items: [{ costName: FEATURED_PITCH_SUBMIT_COST, quantity: 1 }],
+      description: "featured pitch submit",
+      orgId,
+      userId,
+      runId,
+      brandId,
+      campaignId,
+      featureSlug: req.featureSlug,
+      workflowSlug: req.workflowSlug,
+    });
+    if (!auth.sufficient) {
+      res.status(402).json({
+        error: "insufficient credit for featured pitch submit",
+        balance_cents: auth.balance_cents,
+        required_cents: auth.required_cents,
+      });
+      return;
+    }
+  } catch (err) {
+    const status = err instanceof BillingServiceError ? 502 : 500;
+    res.status(status).json({ error: (err as Error).message });
+    return;
+  }
+
   let credentials: FeaturedCredentials;
   try {
-    credentials = await getFeaturedCredentials(orgId, userId, runId);
+    credentials = await getFeaturedCredentials({
+      callerMethod: "POST",
+      callerPath: "/orgs/opportunities/:id/reply",
+      runId,
+    });
   } catch (err) {
     const name = (err as Error).name;
     const message = (err as Error).message;
@@ -304,6 +342,35 @@ async function handleFeaturedReply(args: {
       orgId,
     })
     .returning();
+
+  if (runId) {
+    try {
+      await addCosts(
+        runId,
+        [
+          {
+            costName: FEATURED_PITCH_SUBMIT_COST,
+            costSource: "platform",
+            quantity: 1,
+            status: "actual",
+          },
+        ],
+        {
+          orgId,
+          userId,
+          brandId,
+          campaignId,
+          featureSlug: req.featureSlug,
+          workflowSlug: req.workflowSlug,
+        }
+      );
+    } catch (err) {
+      res.status(500).json({
+        error: `failed to record featured pitch submit cost: ${(err as Error).message}`,
+      });
+      return;
+    }
+  }
 
   res.json({
     status: "submitted",

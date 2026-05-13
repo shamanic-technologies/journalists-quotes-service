@@ -7,10 +7,14 @@ export class KeyServiceUnavailableError extends Error {
   }
 }
 
+export interface FeaturedCredentialsFetchContext {
+  callerMethod: string;
+  callerPath: string;
+  runId?: string;
+}
+
 export async function getFeaturedCredentials(
-  orgId: string,
-  userId?: string,
-  runId?: string
+  ctx: FeaturedCredentialsFetchContext
 ): Promise<FeaturedCredentials> {
   const baseUrl = process.env.KEY_SERVICE_URL;
   const apiKey = process.env.KEY_SERVICE_API_KEY;
@@ -27,52 +31,53 @@ export async function getFeaturedCredentials(
 
   const headers: Record<string, string> = {
     "x-api-key": apiKey,
-    "x-org-id": orgId,
+    "x-caller-service": "journalists-quotes-service",
+    "x-caller-method": ctx.callerMethod,
+    "x-caller-path": ctx.callerPath,
   };
-  if (userId) headers["x-user-id"] = userId;
-  if (runId) headers["x-run-id"] = runId;
+  if (ctx.runId) headers["x-run-id"] = ctx.runId;
 
-  const username = await fetchScalarKey(baseUrl, "featured-username", headers);
-  const password = await fetchScalarKey(baseUrl, "featured-password", headers);
+  const username = await fetchPlatformKey(baseUrl, "featured-username", headers);
+  const password = await fetchPlatformKey(baseUrl, "featured-password", headers);
 
   return { username, password };
 }
 
-async function fetchScalarKey(
+async function fetchPlatformKey(
   baseUrl: string,
-  keyName: "featured-username" | "featured-password",
+  provider: "featured-username" | "featured-password",
   headers: Record<string, string>
 ): Promise<string> {
   let response: Response;
   try {
-    response = await fetch(`${baseUrl}/orgs/keys/${keyName}`, {
-      method: "GET",
-      headers,
-    });
+    response = await fetch(
+      `${baseUrl}/keys/platform/${provider}/decrypt`,
+      { method: "GET", headers }
+    );
   } catch (err) {
     throw new KeyServiceUnavailableError(
-      `key-service network error fetching ${keyName}: ${(err as Error).message}`
+      `key-service network error fetching ${provider}: ${(err as Error).message}`
     );
   }
 
   if (response.status === 404) {
     throw new KeyServiceUnavailableError(
-      `${keyName} key not registered in key-service`
+      `${provider} platform key not registered in key-service`
     );
   }
 
   if (!response.ok) {
     const body = await response.text();
     throw new KeyServiceUnavailableError(
-      `key-service GET /orgs/keys/${keyName} failed (${response.status}): ${body}`
+      `key-service GET /keys/platform/${provider}/decrypt failed (${response.status}): ${body}`
     );
   }
 
-  const data = (await response.json()) as { value?: unknown };
-  if (typeof data.value !== "string" || data.value.length === 0) {
+  const data = (await response.json()) as { key?: unknown };
+  if (typeof data.key !== "string" || data.key.length === 0) {
     throw new Error(
-      `key-service returned malformed ${keyName} response: missing string value`
+      `key-service returned malformed ${provider} response: missing string key`
     );
   }
-  return data.value;
+  return data.key;
 }

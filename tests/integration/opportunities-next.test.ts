@@ -39,6 +39,29 @@ vi.mock("../../src/lib/key-service-client.js", () => ({
   KeyServiceUnavailableError: class extends Error {},
 }));
 
+vi.mock("../../src/lib/billing-client.js", () => ({
+  authorizeCredit: vi.fn(async () => ({
+    sufficient: true,
+    balance_cents: 10_000,
+    required_cents: 1,
+  })),
+  BillingServiceError: class extends Error {
+    constructor(message: string, public readonly status: number) {
+      super(message);
+    }
+  },
+}));
+
+vi.mock("../../src/lib/runs-client.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../src/lib/runs-client.js")
+  >("../../src/lib/runs-client.js");
+  return {
+    ...actual,
+    addCosts: vi.fn(async () => undefined),
+  };
+});
+
 vi.mock("../../src/lib/chat-client.js", () => ({
   ragScore: vi.fn(
     async (req: { documents: { id: string; text: string }[] }) => ({
@@ -187,6 +210,68 @@ describe("POST /orgs/opportunities/next", () => {
 
     expect(res.body.status).toBe("match");
     expect(res.body.featuredQuestionId).toBe(9002);
+  });
+
+  it("returns 402 and does NOT call Featured when billing is insufficient", async () => {
+    state.opportunities = [
+      {
+        featuredQuestionId: 1,
+        opportunity: "AI x",
+        mediaOutlet: "Outlet",
+        source: "featured",
+      },
+    ];
+    const { authorizeCredit } = await import("../../src/lib/billing-client.js");
+    (authorizeCredit as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      sufficient: false,
+      balance_cents: 0,
+      required_cents: 5,
+    });
+
+    const res = await request(app())
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({ campaignId: TEST_CAMPAIGN_A, brandId: TEST_BRAND });
+
+    expect(res.status).toBe(402);
+    expect(res.body.error).toMatch(/insufficient credit/);
+    // Featured should NOT have been hit (silver should be empty)
+    const silver = await db
+      .select()
+      .from(providerQuoteRequests)
+      .where(eq(providerQuoteRequests.orgId, TEST_ORG_A));
+    expect(silver).toHaveLength(0);
+  });
+
+  it("records a featured-api-opportunity-fetch cost via runs-service after a successful Featured call", async () => {
+    state.opportunities = [
+      {
+        featuredQuestionId: 4242,
+        opportunity: "AI ethics",
+        mediaOutlet: "Forbes",
+        source: "featured",
+      },
+    ];
+    const { addCosts } = await import("../../src/lib/runs-client.js");
+    const mocked = addCosts as unknown as ReturnType<typeof vi.fn>;
+    mocked.mockClear();
+
+    const res = await request(app())
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({ campaignId: TEST_CAMPAIGN_A, brandId: TEST_BRAND });
+
+    expect(res.status).toBe(200);
+    expect(mocked).toHaveBeenCalledTimes(1);
+    const [, items] = mocked.mock.calls[0];
+    expect(items).toEqual([
+      {
+        costName: "featured-api-opportunity-fetch",
+        costSource: "platform",
+        quantity: 1,
+        status: "actual",
+      },
+    ]);
   });
 
   it("returns no_match when nothing scores above threshold", async () => {
