@@ -38,6 +38,29 @@ vi.mock("../../src/lib/key-service-client.js", () => ({
   KeyServiceUnavailableError: class extends Error {},
 }));
 
+vi.mock("../../src/lib/billing-client.js", () => ({
+  authorizeCredit: vi.fn(async () => ({
+    sufficient: true,
+    balance_cents: 10_000,
+    required_cents: 1,
+  })),
+  BillingServiceError: class extends Error {
+    constructor(message: string, public readonly status: number) {
+      super(message);
+    }
+  },
+}));
+
+vi.mock("../../src/lib/runs-client.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../src/lib/runs-client.js")
+  >("../../src/lib/runs-client.js");
+  return {
+    ...actual,
+    addCosts: vi.fn(async () => undefined),
+  };
+});
+
 vi.mock("../../src/lib/brand-client.js", () => ({
   getBrand: vi.fn(async (brandId: string) => ({
     id: brandId,
@@ -228,6 +251,80 @@ describe("POST /orgs/opportunities/:id/reply", () => {
 
     const pitches = await db.select().from(quotePitches);
     expect(pitches).toHaveLength(1);
+  });
+
+  it("returns 402 and does NOT call Featured submitAnswer when billing is insufficient for a featured reply", async () => {
+    const silver = await seedFeaturedSilver(7777);
+    const { authorizeCredit } = await import("../../src/lib/billing-client.js");
+    (authorizeCredit as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      sufficient: false,
+      balance_cents: 0,
+      required_cents: 5,
+    });
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({
+        pitchContent: "x".repeat(200),
+        brandId: TEST_BRAND,
+        campaignId: TEST_CAMPAIGN_A,
+      });
+
+    expect(res.status).toBe(402);
+    expect(res.body.error).toMatch(/insufficient credit/);
+    expect(state.submitted).toHaveLength(0);
+    const pitches = await db.select().from(quotePitches);
+    expect(pitches).toHaveLength(0);
+  });
+
+  it("records featured-api-pitch-submit cost after a successful featured reply", async () => {
+    const silver = await seedFeaturedSilver(8888);
+    const { addCosts } = await import("../../src/lib/runs-client.js");
+    const mocked = addCosts as unknown as ReturnType<typeof vi.fn>;
+    mocked.mockClear();
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({
+        pitchContent: "x".repeat(200),
+        brandId: TEST_BRAND,
+        campaignId: TEST_CAMPAIGN_A,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("submitted");
+    expect(mocked).toHaveBeenCalledTimes(1);
+    const [, items] = mocked.mock.calls[0];
+    expect(items).toEqual([
+      {
+        costName: "featured-api-pitch-submit",
+        costSource: "platform",
+        quantity: 1,
+        status: "actual",
+      },
+    ]);
+  });
+
+  it("does NOT call billing-service on email-reply path (no Featured API spend)", async () => {
+    const silver = await seedHaroSilver("uuid-haro-billing");
+    const { authorizeCredit } = await import("../../src/lib/billing-client.js");
+    const authorized = authorizeCredit as unknown as ReturnType<typeof vi.fn>;
+    authorized.mockClear();
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({
+        pitchContent: "x".repeat(200),
+        brandId: TEST_BRAND,
+        campaignId: TEST_CAMPAIGN_A,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.deliveryMethod).toBe("email_reply");
+    expect(authorized).not.toHaveBeenCalled();
   });
 
   it("returns 502 + error pitch row when email-gateway fails", async () => {

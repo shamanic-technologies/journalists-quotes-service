@@ -54,12 +54,16 @@ export function createOpportunitiesNextRouter(
     const userId = req.userId;
     const runId = req.runId;
 
-    // Live-fetch Featured opportunities and upsert as silver rows (write-through
-    // cache). Featured failures are fatal: we can't make a fair "no_match"
-    // decision without seeing Featured's catalog.
+    // Featured opportunity fetches are free and unlimited on the Premium plan,
+    // so we skip billing-service authorize and runs-service addCosts here.
+    // Only pitch submissions are billed (see opportunity-reply.ts).
     let credentials: FeaturedCredentials;
     try {
-      credentials = await getFeaturedCredentials(orgId, userId, runId);
+      credentials = await getFeaturedCredentials({
+        callerMethod: "POST",
+        callerPath: "/orgs/opportunities/next",
+        runId,
+      });
     } catch (err) {
       const name = (err as Error).name;
       const message = (err as Error).message;
