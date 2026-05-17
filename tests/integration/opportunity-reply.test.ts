@@ -34,6 +34,7 @@ vi.mock("../../src/lib/key-service-client.js", () => ({
   getFeaturedCredentials: vi.fn(async () => ({
     username: "mock-u",
     password: "mock-p",
+    keySource: "platform" as const,
   })),
   KeyServiceUnavailableError: class extends Error {},
 }));
@@ -301,6 +302,49 @@ describe("POST /orgs/opportunities/:id/reply", () => {
       {
         costName: "featured-api-pitch-submit",
         costSource: "platform",
+        quantity: 1,
+        status: "actual",
+      },
+    ]);
+  });
+
+  it("skips billing-service authorize and records costSource='org' when keySource is 'org'", async () => {
+    const silver = await seedFeaturedSilver(6060);
+    const { getFeaturedCredentials } = await import(
+      "../../src/lib/key-service-client.js"
+    );
+    (
+      getFeaturedCredentials as unknown as ReturnType<typeof vi.fn>
+    ).mockResolvedValueOnce({
+      username: "org-u",
+      password: "org-p",
+      keySource: "org",
+    });
+    const { authorizeCredit } = await import("../../src/lib/billing-client.js");
+    const authorized = authorizeCredit as unknown as ReturnType<typeof vi.fn>;
+    authorized.mockClear();
+    const { addCosts } = await import("../../src/lib/runs-client.js");
+    const addCostsMock = addCosts as unknown as ReturnType<typeof vi.fn>;
+    addCostsMock.mockClear();
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({
+        pitchContent: "x".repeat(200),
+        brandId: TEST_BRAND,
+        campaignId: TEST_CAMPAIGN_A,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("submitted");
+    expect(authorized).not.toHaveBeenCalled();
+    expect(addCostsMock).toHaveBeenCalledTimes(1);
+    const [, items] = addCostsMock.mock.calls[0];
+    expect(items).toEqual([
+      {
+        costName: "featured-api-pitch-submit",
+        costSource: "org",
         quantity: 1,
         status: "actual",
       },

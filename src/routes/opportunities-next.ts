@@ -59,11 +59,14 @@ export function createOpportunitiesNextRouter(
     // Only pitch submissions are billed (see opportunity-reply.ts).
     let credentials: FeaturedCredentials;
     try {
-      credentials = await getFeaturedCredentials({
+      const result = await getFeaturedCredentials({
         callerMethod: "POST",
         callerPath: "/orgs/opportunities/next",
+        orgId,
+        userId,
         runId,
       });
+      credentials = { username: result.username, password: result.password };
     } catch (err) {
       const name = (err as Error).name;
       const message = (err as Error).message;

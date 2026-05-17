@@ -17,6 +17,7 @@ const KS_KEY = "test-key-service-key";
 const CTX = {
   callerMethod: "POST",
   callerPath: "/orgs/opportunities/next",
+  orgId: "org-1",
 } as const;
 
 describe("key-service-client.getFeaturedCredentials", () => {
@@ -34,35 +35,94 @@ describe("key-service-client.getFeaturedCredentials", () => {
     delete process.env.KEY_SERVICE_API_KEY;
   });
 
-  it("calls /keys/platform/featured-username/decrypt and /keys/platform/featured-password/decrypt and composes both", async () => {
+  it("calls /keys/featured-username/decrypt and /keys/featured-password/decrypt and composes both with keySource", async () => {
     fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === `${KS_URL}/keys/platform/featured-username/decrypt`) {
-        return jsonResponse({ provider: "featured-username", key: "u-1" });
+      if (url === `${KS_URL}/keys/featured-username/decrypt`) {
+        return jsonResponse({
+          provider: "featured-username",
+          key: "u-1",
+          keySource: "platform",
+          userId: "u",
+        });
       }
-      if (url === `${KS_URL}/keys/platform/featured-password/decrypt`) {
-        return jsonResponse({ provider: "featured-password", key: "p-1" });
+      if (url === `${KS_URL}/keys/featured-password/decrypt`) {
+        return jsonResponse({
+          provider: "featured-password",
+          key: "p-1",
+          keySource: "platform",
+          userId: "u",
+        });
       }
       throw new Error(`unexpected url: ${url}`);
     });
 
-    const creds = await getFeaturedCredentials({ ...CTX });
-    expect(creds).toEqual({ username: "u-1", password: "p-1" });
+    const result = await getFeaturedCredentials({ ...CTX });
+    expect(result).toEqual({
+      username: "u-1",
+      password: "p-1",
+      keySource: "platform",
+    });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("sends x-api-key, x-caller-service, x-caller-method, x-caller-path, optional x-run-id and does NOT send x-org-id / x-user-id", async () => {
+  it("returns keySource='org' when key-service reports the org configured its own key", async () => {
     fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       return jsonResponse({
-        provider: url.includes("username") ? "featured-username" : "featured-password",
+        provider: url.includes("username")
+          ? "featured-username"
+          : "featured-password",
+        key: url.includes("username") ? "org-u" : "org-p",
+        keySource: "org",
+        userId: "u",
+      });
+    });
+
+    const result = await getFeaturedCredentials({ ...CTX });
+    expect(result).toEqual({
+      username: "org-u",
+      password: "org-p",
+      keySource: "org",
+    });
+  });
+
+  it("throws on mismatched keySource across the two keys (fail loud)", async () => {
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      return jsonResponse({
+        provider: url.includes("username")
+          ? "featured-username"
+          : "featured-password",
         key: "v",
+        keySource: url.includes("username") ? "platform" : "org",
+        userId: "u",
+      });
+    });
+
+    await expect(getFeaturedCredentials({ ...CTX })).rejects.toThrow(
+      /mismatched keySource/
+    );
+  });
+
+  it("sends x-api-key, x-caller-service, x-caller-method, x-caller-path, x-org-id, and optional x-user-id / x-run-id", async () => {
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      return jsonResponse({
+        provider: url.includes("username")
+          ? "featured-username"
+          : "featured-password",
+        key: "v",
+        keySource: "platform",
+        userId: "u",
       });
     });
 
     await getFeaturedCredentials({
       callerMethod: "POST",
       callerPath: "/orgs/opportunities/next",
+      orgId: "org-1",
+      userId: "user-1",
       runId: "run-9",
     });
 
@@ -73,20 +133,27 @@ describe("key-service-client.getFeaturedCredentials", () => {
       expect(headers["x-caller-service"]).toBe("journalists-quotes-service");
       expect(headers["x-caller-method"]).toBe("POST");
       expect(headers["x-caller-path"]).toBe("/orgs/opportunities/next");
+      expect(headers["x-org-id"]).toBe("org-1");
+      expect(headers["x-user-id"]).toBe("user-1");
       expect(headers["x-run-id"]).toBe("run-9");
-      expect(headers["x-org-id"]).toBeUndefined();
-      expect(headers["x-user-id"]).toBeUndefined();
     }
   });
 
-  it("omits x-run-id when ctx.runId is not provided", async () => {
+  it("omits x-user-id and x-run-id when not provided", async () => {
     fetchSpy.mockImplementation(async () =>
-      jsonResponse({ provider: "featured-username", key: "v" })
+      jsonResponse({
+        provider: "featured-username",
+        key: "v",
+        keySource: "platform",
+        userId: "u",
+      })
     );
     await getFeaturedCredentials({ ...CTX });
     const headers = (fetchSpy.mock.calls[0][1] as RequestInit)
       .headers as Record<string, string>;
+    expect(headers["x-user-id"]).toBeUndefined();
     expect(headers["x-run-id"]).toBeUndefined();
+    expect(headers["x-org-id"]).toBe("org-1");
   });
 
   it("throws KeyServiceUnavailableError when featured-username returns 404", async () => {
@@ -95,14 +162,19 @@ describe("key-service-client.getFeaturedCredentials", () => {
       if (url.includes("featured-username")) {
         return new Response("not found", { status: 404 });
       }
-      return jsonResponse({ provider: "featured-password", key: "p" });
+      return jsonResponse({
+        provider: "featured-password",
+        key: "p",
+        keySource: "platform",
+        userId: "u",
+      });
     });
 
     await expect(getFeaturedCredentials({ ...CTX })).rejects.toThrow(
       KeyServiceUnavailableError
     );
     await expect(getFeaturedCredentials({ ...CTX })).rejects.toThrow(
-      /featured-username platform key not registered/
+      /featured-username key not registered/
     );
   });
 
@@ -110,12 +182,17 @@ describe("key-service-client.getFeaturedCredentials", () => {
     fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("featured-username"))
-        return jsonResponse({ provider: "featured-username", key: "u" });
+        return jsonResponse({
+          provider: "featured-username",
+          key: "u",
+          keySource: "platform",
+          userId: "u",
+        });
       return new Response("not found", { status: 404 });
     });
 
     await expect(getFeaturedCredentials({ ...CTX })).rejects.toThrow(
-      /featured-password platform key not registered/
+      /featured-password key not registered/
     );
   });
 
@@ -147,8 +224,13 @@ describe("key-service-client.getFeaturedCredentials", () => {
     fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("featured-username"))
-        return jsonResponse({ foo: "bar" });
-      return jsonResponse({ provider: "featured-password", key: "p" });
+        return jsonResponse({ foo: "bar", keySource: "platform" });
+      return jsonResponse({
+        provider: "featured-password",
+        key: "p",
+        keySource: "platform",
+        userId: "u",
+      });
     });
 
     await expect(getFeaturedCredentials({ ...CTX })).rejects.toThrow(
@@ -160,12 +242,33 @@ describe("key-service-client.getFeaturedCredentials", () => {
     fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("featured-username"))
-        return jsonResponse({ provider: "featured-username", key: "u" });
-      return jsonResponse({ wrong: "shape" });
+        return jsonResponse({
+          provider: "featured-username",
+          key: "u",
+          keySource: "platform",
+          userId: "u",
+        });
+      return jsonResponse({ wrong: "shape", keySource: "platform" });
     });
 
     await expect(getFeaturedCredentials({ ...CTX })).rejects.toThrow(
       /malformed.*featured-password/
+    );
+  });
+
+  it("throws when keySource is missing or invalid", async () => {
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      return jsonResponse({
+        provider: url.includes("username")
+          ? "featured-username"
+          : "featured-password",
+        key: "v",
+      });
+    });
+
+    await expect(getFeaturedCredentials({ ...CTX })).rejects.toThrow(
+      /invalid keySource/
     );
   });
 

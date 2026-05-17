@@ -35,6 +35,7 @@ vi.mock("../../src/lib/key-service-client.js", () => ({
   getFeaturedCredentials: vi.fn(async () => ({
     username: "mock-u",
     password: "mock-p",
+    keySource: "platform" as const,
   })),
   KeyServiceUnavailableError: class extends Error {},
 }));
