@@ -11,10 +11,12 @@ import {
   FeaturedClient,
   type FeaturedCredentials,
   type FeaturedClientOptions,
+  type FeaturedOpportunity,
 } from "../lib/featured-client.js";
 import { getFeaturedCredentials } from "../lib/key-service-client.js";
 import { ragScore } from "../lib/chat-client.js";
 import { SHARED_EMAIL_ORG_ID } from "../lib/inbound/process.js";
+import { computeFingerprint } from "../lib/cluster/fingerprint.js";
 
 const SCORE_THRESHOLD = Number(process.env.SCORE_THRESHOLD ?? "0.5");
 
@@ -22,6 +24,12 @@ function safeParseDate(value: string | undefined | null): Date | null {
   if (!value) return null;
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function featuredExternalId(o: FeaturedOpportunity): string {
+  if (typeof o.featuredQuestionId === "number") return String(o.featuredQuestionId);
+  if (o.pitchUrl) return o.pitchUrl;
+  return computeFingerprint(o.opportunity ?? "", o.mediaOutlet);
 }
 
 const OpportunityNextRequestSchema = z.object({
@@ -95,15 +103,21 @@ export function createOpportunitiesNextRouter(
       return;
     }
 
-    if (featuredOpps.length > 0) {
+    const insertableOpps = featuredOpps.filter(
+      (o) => typeof o.opportunity === "string" && o.opportunity.length > 0
+    );
+    if (insertableOpps.length > 0) {
       await db
         .insert(providerQuoteRequests)
         .values(
-          featuredOpps.map((o) => ({
-            provider: o.source ?? "featured",
+          insertableOpps.map((o) => ({
+            provider: "featured",
             ingestionChannel: "api" as const,
-            externalId: String(o.featuredQuestionId),
-            featuredQuestionId: o.featuredQuestionId,
+            externalId: featuredExternalId(o),
+            featuredQuestionId:
+              typeof o.featuredQuestionId === "number"
+                ? o.featuredQuestionId
+                : null,
             mediaOutlet: o.mediaOutlet ?? null,
             opportunityText: o.opportunity,
             pitchUrl: o.pitchUrl ?? null,

@@ -120,6 +120,67 @@ describe("POST /orgs/opportunities/next", () => {
     expect(priorities).toHaveLength(2);
   });
 
+  it("stores provider='featured' and stable externalId when no featuredQuestionId", async () => {
+    state.opportunities = [
+      {
+        opportunity: "available LinkedIn opportunity text",
+        mediaOutlet: "Men's Journal",
+        source: "LinkedIn",
+        pitchUrl: "https://linkedin.com/post/abc",
+      } as unknown as (typeof state.opportunities)[number],
+      {
+        opportunity: "available Substack opportunity text",
+        mediaOutlet: "Some Outlet",
+        source: "Substack",
+      } as unknown as (typeof state.opportunities)[number],
+    ];
+
+    const res = await request(app())
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({ campaignId: TEST_CAMPAIGN_A, brandId: TEST_BRAND });
+
+    expect(res.status).toBe(200);
+    const silver = await db
+      .select()
+      .from(providerQuoteRequests)
+      .where(eq(providerQuoteRequests.orgId, TEST_ORG_A));
+    expect(silver).toHaveLength(2);
+    for (const row of silver) {
+      expect(row.provider).toBe("featured");
+      expect(row.externalId).not.toBe("undefined");
+      expect(row.externalId.length).toBeGreaterThan(0);
+    }
+    const byPitch = silver.find((r) => r.pitchUrl === "https://linkedin.com/post/abc");
+    expect(byPitch?.externalId).toBe("https://linkedin.com/post/abc");
+  });
+
+  it("dedupes Featured opportunities across calls when no featuredQuestionId is present", async () => {
+    const opp = {
+      opportunity: "Looking for AI ethics expert quote",
+      mediaOutlet: "Men's Journal",
+      source: "LinkedIn",
+      pitchUrl: "https://linkedin.com/post/stable-id",
+    } as unknown as (typeof state.opportunities)[number];
+    state.opportunities = [opp];
+
+    const a = app();
+    await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({ campaignId: TEST_CAMPAIGN_A, brandId: TEST_BRAND });
+    await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({ campaignId: TEST_CAMPAIGN_A, brandId: TEST_BRAND });
+
+    const silver = await db
+      .select()
+      .from(providerQuoteRequests)
+      .where(eq(providerQuoteRequests.orgId, TEST_ORG_A));
+    expect(silver).toHaveLength(1);
+  });
+
   it("tolerates Featured opportunities with unparseable deadline strings", async () => {
     state.opportunities = [
       {
