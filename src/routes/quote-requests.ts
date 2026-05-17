@@ -1,7 +1,11 @@
 import { Router } from "express";
 import { and, desc, eq, sql as drizzleSql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { providerQuoteRequests, quotePitches } from "../db/schema.js";
+import {
+  providerQuoteRequests,
+  quotePitches,
+  quotePriorities,
+} from "../db/schema.js";
 import { QuoteRequestListQuerySchema } from "../schemas.js";
 
 const router = Router();
@@ -47,7 +51,8 @@ router.get("/orgs/quote-requests", async (req, res) => {
     return;
   }
   const orgId = req.orgId!;
-  const { provider, ingestion_channel, limit, offset } = parsed.data;
+  const { campaign_id, provider, ingestion_channel, limit, offset } =
+    parsed.data;
   const limitN = limit ? Number(limit) : 100;
   const offsetN = offset ? Number(offset) : 0;
 
@@ -57,6 +62,23 @@ router.get("/orgs/quote-requests", async (req, res) => {
     conditions.push(
       eq(providerQuoteRequests.ingestionChannel, ingestion_channel)
     );
+
+  if (campaign_id) {
+    conditions.push(eq(quotePriorities.campaignId, campaign_id));
+    const rows = await db
+      .select({ row: providerQuoteRequests })
+      .from(providerQuoteRequests)
+      .innerJoin(
+        quotePriorities,
+        eq(quotePriorities.quoteRequestId, providerQuoteRequests.id)
+      )
+      .where(and(...conditions))
+      .orderBy(desc(providerQuoteRequests.fetchedAt))
+      .limit(limitN)
+      .offset(offsetN);
+    res.json({ providerQuoteRequests: rows.map((r) => r.row) });
+    return;
+  }
 
   const rows = await db
     .select()
