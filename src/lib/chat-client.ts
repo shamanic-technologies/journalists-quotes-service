@@ -1,6 +1,3 @@
-const CHAT_SERVICE_URL = process.env.CHAT_SERVICE_URL;
-const CHAT_SERVICE_API_KEY = process.env.CHAT_SERVICE_API_KEY;
-
 export interface RagScoreDocument {
   id: string;
   text: string;
@@ -28,24 +25,27 @@ export async function ragScore(
   userId?: string,
   runId?: string
 ): Promise<RagScoreResponse> {
-  // TODO(rag-endpoint): chat-service /orgs/rag/score not yet implemented.
-  // Fallback: assign descending recency-based scores so end-to-end flow remains testable.
-  if (!CHAT_SERVICE_URL || !CHAT_SERVICE_API_KEY) {
+  const chatServiceUrl = process.env.CHAT_SERVICE_URL;
+  const chatServiceApiKey = process.env.CHAT_SERVICE_API_KEY;
+  if (!chatServiceUrl || !chatServiceApiKey) {
     return fallbackScore(request);
   }
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "x-api-key": CHAT_SERVICE_API_KEY,
+    "x-api-key": chatServiceApiKey,
     "x-org-id": orgId,
   };
   if (userId) headers["x-user-id"] = userId;
   if (runId) headers["x-run-id"] = runId;
 
-  const response = await fetch(`${CHAT_SERVICE_URL}/orgs/rag/score`, {
+  const response = await fetch(`${chatServiceUrl}/orgs/rag/score`, {
     method: "POST",
     headers,
-    body: JSON.stringify(request),
+    body: JSON.stringify({
+      documents: request.documents,
+      brandId: request.brandId,
+    }),
   });
 
   if (response.status === 404) {
