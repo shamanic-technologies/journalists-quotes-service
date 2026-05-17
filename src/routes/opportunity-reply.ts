@@ -221,39 +221,18 @@ async function handleFeaturedReply(args: {
     return;
   }
 
+  let credentials: FeaturedCredentials;
+  let keySource: "org" | "platform";
   try {
-    const auth = await authorizeCredit({
-      items: [{ costName: FEATURED_PITCH_SUBMIT_COST, quantity: 1 }],
-      description: "featured pitch submit",
+    const result = await getFeaturedCredentials({
+      callerMethod: "POST",
+      callerPath: "/orgs/opportunities/:id/reply",
       orgId,
       userId,
       runId,
-      brandId,
-      campaignId,
-      featureSlug: req.featureSlug,
-      workflowSlug: req.workflowSlug,
     });
-    if (!auth.sufficient) {
-      res.status(402).json({
-        error: "insufficient credit for featured pitch submit",
-        balance_cents: auth.balance_cents,
-        required_cents: auth.required_cents,
-      });
-      return;
-    }
-  } catch (err) {
-    const status = err instanceof BillingServiceError ? 502 : 500;
-    res.status(status).json({ error: (err as Error).message });
-    return;
-  }
-
-  let credentials: FeaturedCredentials;
-  try {
-    credentials = await getFeaturedCredentials({
-      callerMethod: "POST",
-      callerPath: "/orgs/opportunities/:id/reply",
-      runId,
-    });
+    credentials = { username: result.username, password: result.password };
+    keySource = result.keySource;
   } catch (err) {
     const name = (err as Error).name;
     const message = (err as Error).message;
@@ -264,6 +243,35 @@ async function handleFeaturedReply(args: {
     res.status(500).json({ error: message });
     return;
   }
+
+  if (keySource === "platform") {
+    try {
+      const auth = await authorizeCredit({
+        items: [{ costName: FEATURED_PITCH_SUBMIT_COST, quantity: 1 }],
+        description: "featured pitch submit",
+        orgId,
+        userId,
+        runId,
+        brandId,
+        campaignId,
+        featureSlug: req.featureSlug,
+        workflowSlug: req.workflowSlug,
+      });
+      if (!auth.sufficient) {
+        res.status(402).json({
+          error: "insufficient credit for featured pitch submit",
+          balance_cents: auth.balance_cents,
+          required_cents: auth.required_cents,
+        });
+        return;
+      }
+    } catch (err) {
+      const status = err instanceof BillingServiceError ? 502 : 500;
+      res.status(status).json({ error: (err as Error).message });
+      return;
+    }
+  }
+
   const client = buildClient(credentials);
 
   let profile;
@@ -350,7 +358,7 @@ async function handleFeaturedReply(args: {
         [
           {
             costName: FEATURED_PITCH_SUBMIT_COST,
-            costSource: "platform",
+            costSource: keySource,
             quantity: 1,
             status: "actual",
           },

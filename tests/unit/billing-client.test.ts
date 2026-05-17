@@ -29,7 +29,7 @@ describe("billing-client.authorizeCredit", () => {
     delete process.env.BILLING_SERVICE_API_KEY;
   });
 
-  it("POSTs to /v1/credits/authorize with items, description, and identity headers", async () => {
+  it("POSTs to /v1/customer_balance/authorize with items, description, and identity headers", async () => {
     fetchSpy.mockResolvedValue(
       jsonResponse({ sufficient: true, balance_cents: 1000, required_cents: 5 })
     );
@@ -54,7 +54,7 @@ describe("billing-client.authorizeCredit", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
 
     const [url, init] = fetchSpy.mock.calls[0];
-    expect(String(url)).toBe(`${BS_URL}/v1/credits/authorize`);
+    expect(String(url)).toBe(`${BS_URL}/v1/customer_balance/authorize`);
     expect((init as RequestInit).method).toBe("POST");
     const headers = (init as RequestInit).headers as Record<string, string>;
     expect(headers["X-API-Key"]).toBe(BS_KEY);
