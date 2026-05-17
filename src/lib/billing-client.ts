@@ -56,7 +56,7 @@ export async function authorizeCredit(
   if (params.featureSlug) headers["x-feature-slug"] = params.featureSlug;
   if (params.workflowSlug) headers["x-workflow-slug"] = params.workflowSlug;
 
-  const response = await fetch(`${baseUrl}/v1/credits/authorize`, {
+  const response = await fetch(`${baseUrl}/v1/customer_balance/authorize`, {
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -68,7 +68,7 @@ export async function authorizeCredit(
   if (!response.ok) {
     const body = await response.text();
     throw new BillingServiceError(
-      `billing-service POST /v1/credits/authorize failed (${response.status}): ${body}`,
+      `billing-service POST /v1/customer_balance/authorize failed (${response.status}): ${body}`,
       response.status
     );
   }
