@@ -12,7 +12,6 @@ export interface RagScoreResult {
 export interface RagScoreRequest {
   documents: RagScoreDocument[];
   brandId: string;
-  campaignId?: string;
 }
 
 export interface RagScoreResponse {
