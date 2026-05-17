@@ -180,7 +180,6 @@ export function createOpportunitiesNextRouter(
       {
         documents: eligible.map((c) => ({ id: c.id, text: c.opportunityText })),
         brandId,
-        campaignId,
       },
       orgId,
       userId,
