@@ -120,6 +120,49 @@ describe("POST /orgs/opportunities/next", () => {
     expect(priorities).toHaveLength(2);
   });
 
+  it("tolerates Featured opportunities with unparseable deadline strings", async () => {
+    state.opportunities = [
+      {
+        featuredQuestionId: 5050,
+        opportunity: "AI ethics in healthcare",
+        mediaOutlet: "Forbes",
+        source: "featured",
+        deadline: "TBD",
+      },
+      {
+        featuredQuestionId: 5051,
+        opportunity: "available expert",
+        mediaOutlet: "WSJ",
+        source: "featured",
+        deadline: "",
+      },
+      {
+        featuredQuestionId: 5052,
+        opportunity: "available now",
+        mediaOutlet: "NYT",
+        source: "featured",
+        deadline: "2099-01-01T00:00:00Z",
+      },
+    ];
+
+    const res = await request(app())
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({ campaignId: TEST_CAMPAIGN_A, brandId: TEST_BRAND });
+
+    expect(res.status).toBe(200);
+    const silver = await db
+      .select()
+      .from(providerQuoteRequests)
+      .where(eq(providerQuoteRequests.orgId, TEST_ORG_A));
+    expect(silver).toHaveLength(3);
+
+    const byExternalId = new Map(silver.map((r) => [r.externalId, r]));
+    expect(byExternalId.get("5050")?.deadline).toBeNull();
+    expect(byExternalId.get("5051")?.deadline).toBeNull();
+    expect(byExternalId.get("5052")?.deadline).toBeInstanceOf(Date);
+  });
+
   it("includes email-sourced silver rows (SHARED_EMAIL_ORG_ID) in the candidate pool", async () => {
     await db.insert(providerQuoteRequests).values({
       provider: "haro",

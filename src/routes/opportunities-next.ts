@@ -18,6 +18,12 @@ import { SHARED_EMAIL_ORG_ID } from "../lib/inbound/process.js";
 
 const SCORE_THRESHOLD = Number(process.env.SCORE_THRESHOLD ?? "0.5");
 
+function safeParseDate(value: string | undefined | null): Date | null {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 const OpportunityNextRequestSchema = z.object({
   campaignId: z.string().uuid(),
   brandId: z.string().uuid(),
@@ -101,7 +107,7 @@ export function createOpportunitiesNextRouter(
             mediaOutlet: o.mediaOutlet ?? null,
             opportunityText: o.opportunity,
             pitchUrl: o.pitchUrl ?? null,
-            deadline: o.deadline ? new Date(o.deadline) : null,
+            deadline: safeParseDate(o.deadline),
             raw: o,
             orgId,
           }))
