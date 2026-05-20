@@ -10,82 +10,31 @@ function getConfig() {
 
 export interface BrandContext {
   id: string;
+  domain: string;
+  url: string;
   name: string;
-  industry?: string;
-  geography?: string;
-  targetAudience?: string;
-  description?: string;
-  [key: string]: unknown;
-}
-
-export interface BrandLogoAsset {
-  id: string;
-  permanentUrl: string;
-  category: string;
-  [key: string]: unknown;
-}
-
-function buildHeaders(
-  orgId: string,
-  userId?: string,
-  runId?: string,
-  extras?: Record<string, string | undefined>
-) {
-  const { apiKey } = getConfig();
-  const headers: Record<string, string> = {
-    "x-api-key": apiKey,
-    "x-org-id": orgId,
-  };
-  if (userId) headers["x-user-id"] = userId;
-  if (runId) headers["x-run-id"] = runId;
-  if (extras) {
-    for (const [k, v] of Object.entries(extras)) {
-      if (v) headers[k] = v;
-    }
-  }
-  return headers;
+  logoUrl: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export async function getBrand(
   brandId: string,
-  orgId: string,
-  userId?: string,
-  runId?: string
+  orgId?: string
 ): Promise<BrandContext> {
-  const { url } = getConfig();
-  const response = await fetch(`${url}/orgs/brands/${brandId}`, {
+  const { url, apiKey } = getConfig();
+  const query = orgId ? `?orgId=${encodeURIComponent(orgId)}` : "";
+  const response = await fetch(`${url}/internal/brands/${brandId}${query}`, {
     method: "GET",
-    headers: buildHeaders(orgId, userId, runId),
+    headers: { "x-api-key": apiKey },
   });
   if (!response.ok) {
     const body = await response.text();
     throw new Error(
-      `brand-service GET /orgs/brands/${brandId} failed (${response.status}): ${body}`
+      `brand-service GET /internal/brands/${brandId} failed (${response.status}): ${body}`
     );
   }
   const data = (await response.json()) as { brand?: BrandContext };
   if (!data.brand) throw new Error("brand-service response missing brand");
   return data.brand;
-}
-
-export async function getBrandLogo(
-  brandId: string,
-  orgId: string,
-  userId?: string,
-  runId?: string
-): Promise<BrandLogoAsset | null> {
-  const { url } = getConfig();
-  const response = await fetch(
-    `${url}/orgs/brands/${brandId}/media-assets?category=logo`,
-    { method: "GET", headers: buildHeaders(orgId, userId, runId) }
-  );
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `brand-service GET /orgs/brands/${brandId}/media-assets failed (${response.status}): ${body}`
-    );
-  }
-  const data = (await response.json()) as { mediaAssets?: BrandLogoAsset[] };
-  const logos = data.mediaAssets ?? [];
-  return logos[0] ?? null;
 }

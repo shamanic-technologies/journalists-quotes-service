@@ -279,8 +279,6 @@ async function handleFeaturedReply(args: {
     profile = await ensureFeaturedProfile({
       orgId,
       brandId,
-      userId,
-      runId,
       client,
       fetchLogoBytes,
     });
