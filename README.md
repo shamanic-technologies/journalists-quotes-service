@@ -84,7 +84,7 @@ The server boots on `PORT` (default `3050`) and runs Drizzle migrations automati
 - All other calls use `x-access-token: <JWT>` header.
 - Submit rate limit: token-bucket, 100 / sliding hour. WF3 returns `status="rate_limited"` with `retryAfter` seconds when exhausted.
 - Answer length must be 100–2500 chars (FeaturedClient.submitAnswer throws if out of bounds — caller responsibility).
-- `createProfile` (lazy, inside WF3 Featured path) uses multipart/form-data with the brand logo bytes fetched from brand-service `media-assets`.
+- `createProfile` (lazy, inside WF3 Featured path) uses multipart/form-data with brand logo bytes fetched from `brand.logoUrl` returned by brand-service `GET /internal/brands/{id}` (deterministic logo.dev URL, lazy-filled).
 
 ## Email-gateway integration
 
