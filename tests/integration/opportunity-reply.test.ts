@@ -65,12 +65,12 @@ vi.mock("../../src/lib/runs-client.js", async () => {
 vi.mock("../../src/lib/brand-client.js", () => ({
   getBrand: vi.fn(async (brandId: string) => ({
     id: brandId,
+    domain: "test-brand.com",
+    url: "https://test-brand.com",
     name: "Test Brand",
-  })),
-  getBrandLogo: vi.fn(async () => ({
-    id: "logo-1",
-    permanentUrl: "http://cdn.test/logo.png",
-    category: "logo",
+    logoUrl: "http://cdn.test/logo.png",
+    createdAt: "2024-01-01T00:00:00Z",
+    updatedAt: "2024-01-01T00:00:00Z",
   })),
 }));
 
