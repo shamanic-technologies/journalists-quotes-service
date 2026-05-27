@@ -195,6 +195,78 @@ export const OpportunityReplyRequestSchema = z
   })
   .openapi("OpportunityReplyRequest");
 
+// ---------- Ranked opportunities (HITL queue) ----------
+
+export const OpportunityRankedRequestSchema = z
+  .object({
+    campaignId: z.string().uuid(),
+    brandId: z.string().uuid(),
+    limit: z.number().int().min(1).max(50).optional(),
+    offset: z.number().int().min(0).optional(),
+  })
+  .openapi("OpportunityRankedRequest");
+
+export const RankedOpportunitySchema = z
+  .object({
+    opportunityId: z.string().uuid(),
+    provider: z.string(),
+    ingestionChannel: z.string(),
+    featuredQuestionId: z.number().int().nullable(),
+    mediaOutlet: z.string().nullable(),
+    journalistName: z.string().nullable(),
+    opportunityText: z.string(),
+    deadline: z.string().nullable(),
+    pitchUrl: z.string().nullable(),
+    pitchEmail: z.string().nullable(),
+    category: z.string().nullable(),
+    score: z.number(),
+    whyRelevant: z.string().nullable(),
+  })
+  .openapi("RankedOpportunity");
+
+export const OpportunityRankedResponseSchema = z
+  .object({
+    status: z.literal("ok"),
+    opportunities: z.array(RankedOpportunitySchema),
+    total: z.number().int(),
+  })
+  .openapi("OpportunityRankedResponse");
+
+// ---------- Quote-request draft (HITL pitch generation) ----------
+
+export const QuoteRequestDraftRequestSchema = z
+  .object({
+    brandId: z.string().uuid(),
+    campaignId: z.string().uuid(),
+    spokesperson: z.string().min(1),
+    expertiseTopics: z.string().min(1),
+    responseStyle: z.string().min(1),
+    companyContext: z.string().min(1),
+    valueProposition: z.string().min(1),
+    additionalContext: z.string().optional(),
+  })
+  .openapi("QuoteRequestDraftRequest");
+
+export const QuoteRequestDraftResponseSchema = z
+  .object({
+    pitch: z.string(),
+    charCount: z.number().int(),
+    attempts: z.number().int(),
+    tokensInput: z.number(),
+    tokensOutput: z.number(),
+  })
+  .openapi("QuoteRequestDraftResponse");
+
+export const ExpertQuotePitchLengthErrorResponseSchema = z
+  .object({
+    error: z.string(),
+    charCount: z.number().int(),
+    minChars: z.number().int(),
+    maxChars: z.number().int(),
+    attempts: z.number().int(),
+  })
+  .openapi("ExpertQuotePitchLengthErrorResponse");
+
 export const OpportunityReplyResponseSchema = z
   .object({
     status: z.enum([
@@ -311,6 +383,83 @@ registry.registerPath({
     },
     502: {
       description: "Upstream service unavailable (key-service, Featured)",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/orgs/opportunities/ranked",
+  summary:
+    "Return the top-N ranked opportunities for a (campaign, brand). Same RAG scoring pipeline as /next, paginated. Used by the HITL dashboard queue.",
+  security: [{ [apiKeyAuth.name]: [] }],
+  request: {
+    headers: orgHeaders,
+    body: {
+      content: {
+        "application/json": { schema: OpportunityRankedRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Ranked opportunities above SCORE_THRESHOLD, sorted by score desc",
+      content: {
+        "application/json": { schema: OpportunityRankedResponseSchema },
+      },
+    },
+    400: {
+      description: "Validation error",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    502: {
+      description: "Upstream service unavailable (key-service, Featured)",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/orgs/quote-requests/{id}/draft",
+  summary:
+    "Generate an AI-drafted pitch for the given quote request via content-generation-service. Returns the drafted text without submitting — caller decides when/whether to submit via POST /orgs/opportunities/:id/reply.",
+  security: [{ [apiKeyAuth.name]: [] }],
+  request: {
+    headers: orgHeaders,
+    params: z.object({ id: z.string().uuid() }),
+    body: {
+      content: {
+        "application/json": { schema: QuoteRequestDraftRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Drafted pitch within the configured char range",
+      content: {
+        "application/json": { schema: QuoteRequestDraftResponseSchema },
+      },
+    },
+    400: {
+      description:
+        "Validation error or pitch length out of range after retry (passthrough from content-generation-service)",
+      content: {
+        "application/json": {
+          schema: z.union([
+            ErrorResponseSchema,
+            ExpertQuotePitchLengthErrorResponseSchema,
+          ]),
+        },
+      },
+    },
+    404: {
+      description: "Quote request not found for this org",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    502: {
+      description: "Upstream content-generation-service unavailable",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
   },

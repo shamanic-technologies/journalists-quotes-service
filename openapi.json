@@ -135,6 +135,224 @@
           "brandId"
         ]
       },
+      "RankedOpportunity": {
+        "type": "object",
+        "properties": {
+          "opportunityId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "ingestionChannel": {
+            "type": "string"
+          },
+          "featuredQuestionId": {
+            "type": "integer",
+            "nullable": true
+          },
+          "mediaOutlet": {
+            "type": "string",
+            "nullable": true
+          },
+          "journalistName": {
+            "type": "string",
+            "nullable": true
+          },
+          "opportunityText": {
+            "type": "string"
+          },
+          "deadline": {
+            "type": "string",
+            "nullable": true
+          },
+          "pitchUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "pitchEmail": {
+            "type": "string",
+            "nullable": true
+          },
+          "category": {
+            "type": "string",
+            "nullable": true
+          },
+          "score": {
+            "type": "number"
+          },
+          "whyRelevant": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "opportunityId",
+          "provider",
+          "ingestionChannel",
+          "featuredQuestionId",
+          "mediaOutlet",
+          "journalistName",
+          "opportunityText",
+          "deadline",
+          "pitchUrl",
+          "pitchEmail",
+          "category",
+          "score",
+          "whyRelevant"
+        ]
+      },
+      "OpportunityRankedResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok"
+            ]
+          },
+          "opportunities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RankedOpportunity"
+            }
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "opportunities",
+          "total"
+        ]
+      },
+      "OpportunityRankedRequest": {
+        "type": "object",
+        "properties": {
+          "campaignId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "brandId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "campaignId",
+          "brandId"
+        ]
+      },
+      "QuoteRequestDraftResponse": {
+        "type": "object",
+        "properties": {
+          "pitch": {
+            "type": "string"
+          },
+          "charCount": {
+            "type": "integer"
+          },
+          "attempts": {
+            "type": "integer"
+          },
+          "tokensInput": {
+            "type": "number"
+          },
+          "tokensOutput": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "pitch",
+          "charCount",
+          "attempts",
+          "tokensInput",
+          "tokensOutput"
+        ]
+      },
+      "ExpertQuotePitchLengthErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "charCount": {
+            "type": "integer"
+          },
+          "minChars": {
+            "type": "integer"
+          },
+          "maxChars": {
+            "type": "integer"
+          },
+          "attempts": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "error",
+          "charCount",
+          "minChars",
+          "maxChars",
+          "attempts"
+        ]
+      },
+      "QuoteRequestDraftRequest": {
+        "type": "object",
+        "properties": {
+          "brandId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "campaignId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "spokesperson": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expertiseTopics": {
+            "type": "string",
+            "minLength": 1
+          },
+          "responseStyle": {
+            "type": "string",
+            "minLength": 1
+          },
+          "companyContext": {
+            "type": "string",
+            "minLength": 1
+          },
+          "valueProposition": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalContext": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "brandId",
+          "campaignId",
+          "spokesperson",
+          "expertiseTopics",
+          "responseStyle",
+          "companyContext",
+          "valueProposition"
+        ]
+      },
       "OpportunityReplyResponse": {
         "type": "object",
         "properties": {
@@ -684,6 +902,156 @@
           },
           "502": {
             "description": "Upstream service unavailable (key-service, Featured)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/opportunities/ranked": {
+      "post": {
+        "summary": "Return the top-N ranked opportunities for a (campaign, brand). Same RAG scoring pipeline as /next, paginated. Used by the HITL dashboard queue.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-org-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpportunityRankedRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ranked opportunities above SCORE_THRESHOLD, sorted by score desc",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpportunityRankedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream service unavailable (key-service, Featured)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/quote-requests/{id}/draft": {
+      "post": {
+        "summary": "Generate an AI-drafted pitch for the given quote request via content-generation-service. Returns the drafted text without submitting — caller decides when/whether to submit via POST /orgs/opportunities/:id/reply.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-org-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuoteRequestDraftRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Drafted pitch within the configured char range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuoteRequestDraftResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error or pitch length out of range after retry (passthrough from content-generation-service)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ExpertQuotePitchLengthErrorResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Quote request not found for this org",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream content-generation-service unavailable",
             "content": {
               "application/json": {
                 "schema": {

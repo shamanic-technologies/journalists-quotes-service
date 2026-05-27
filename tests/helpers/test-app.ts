@@ -7,10 +7,18 @@ import {
   type OpportunitiesNextDeps,
 } from "../../src/routes/opportunities-next.js";
 import {
+  createOpportunitiesRankedRouter,
+  type OpportunitiesRankedDeps,
+} from "../../src/routes/opportunities-ranked.js";
+import {
   createOpportunityReplyRouter,
   type OpportunityReplyDeps,
 } from "../../src/routes/opportunity-reply.js";
 import quoteRequestsRoutes from "../../src/routes/quote-requests.js";
+import {
+  createQuoteRequestDraftRouter,
+  type QuoteRequestDraftDeps,
+} from "../../src/routes/quote-request-draft.js";
 import quotePitchesRoutes from "../../src/routes/quote-pitches.js";
 import processInboundEmailsRoutes from "../../src/routes/process-inbound-emails.js";
 import inboundEmailRoutes from "../../src/routes/webhooks/inbound-email.js";
@@ -23,7 +31,9 @@ import { hmacVerify } from "../../src/middleware/hmac-verify.js";
 
 export interface TestAppDeps {
   opportunitiesNextDeps?: OpportunitiesNextDeps;
+  opportunitiesRankedDeps?: OpportunitiesRankedDeps;
   opportunityReplyDeps?: OpportunityReplyDeps;
+  quoteRequestDraftDeps?: QuoteRequestDraftDeps;
   /**
    * Skip HMAC verification on /webhooks/inbound-email when tests want to
    * exercise the route without computing a signature.
@@ -57,7 +67,9 @@ export function createTestApp(deps: TestAppDeps = {}) {
 
   app.use("/orgs", apiKeyAuth, requireOrgId, withRunTracking);
   app.use(createOpportunitiesNextRouter(deps.opportunitiesNextDeps));
+  app.use(createOpportunitiesRankedRouter(deps.opportunitiesRankedDeps));
   app.use(createOpportunityReplyRouter(deps.opportunityReplyDeps));
+  app.use(createQuoteRequestDraftRouter(deps.quoteRequestDraftDeps));
   app.use(quoteRequestsRoutes);
   app.use(quotePitchesRoutes);
 
