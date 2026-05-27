@@ -165,11 +165,11 @@ export const providerQuoteRequests = pgTable(
 export const quotePriorities = pgTable(
   "quote_priorities",
   {
-    quoteRequestId: uuid("quote_request_id")
+    quoteOpportunityId: uuid("quote_opportunity_id")
       .notNull()
-      .references(() => providerQuoteRequests.id, { onDelete: "cascade" }),
+      .references(() => quoteOpportunities.id, { onDelete: "cascade" }),
+    brandIds: uuid("brand_ids").array().notNull(),
     campaignId: uuid("campaign_id"),
-    brandId: uuid("brand_id").notNull(),
     score: numeric("score", { precision: 5, scale: 2 }).notNull(),
     whyRelevant: text("why_relevant"),
     scoredAt: timestamp("scored_at", { withTimezone: true })
@@ -179,8 +179,9 @@ export const quotePriorities = pgTable(
     orgId: uuid("org_id").notNull(),
   },
   (table) => [
-    primaryKey({ columns: [table.quoteRequestId, table.brandId] }),
-    index("idx_quote_priorities_brand_score").on(table.brandId, table.score),
+    primaryKey({ columns: [table.quoteOpportunityId, table.brandIds] }),
+    index("idx_quote_priorities_brand_ids").using("gin", table.brandIds),
+    index("idx_quote_priorities_score").on(table.score),
   ]
 );
 
@@ -220,7 +221,7 @@ export const quotePitches = pgTable(
     featuredQuestionId: integer("featured_question_id"),
     featuredProfileId: integer("featured_profile_id"),
     campaignId: uuid("campaign_id"),
-    brandId: uuid("brand_id").notNull(),
+    brandIds: uuid("brand_ids").array().notNull(),
     draft: text("draft"),
     pitchCharCount: integer("pitch_char_count"),
     pitchAttempts: integer("pitch_attempts"),
@@ -252,12 +253,11 @@ export const quotePitches = pgTable(
       table.status
     ),
     index("idx_quote_pitches_quote_request").on(table.quoteRequestId),
-    uniqueIndex("idx_quote_pitches_opportunity_brand")
-      .on(table.quoteOpportunityId, table.brandId)
+    index("idx_quote_pitches_quote_opportunity").on(table.quoteOpportunityId),
+    index("idx_quote_pitches_brand_ids").using("gin", table.brandIds),
+    uniqueIndex("idx_quote_pitches_opportunity_brand_ids")
+      .on(table.quoteOpportunityId, table.brandIds)
       .where(sql`quote_opportunity_id IS NOT NULL AND status NOT IN ('error', 'length_violation', 'template_missing', 'brand_missing_fields', 'insufficient_credits')`),
-    uniqueIndex("idx_quote_pitches_request_brand")
-      .on(table.quoteRequestId, table.brandId)
-      .where(sql`quote_opportunity_id IS NULL AND status NOT IN ('error', 'length_violation', 'template_missing', 'brand_missing_fields', 'insufficient_credits')`),
   ]
 );
 

@@ -19,7 +19,7 @@ import { cleanTestData, closeDb } from "../helpers/test-db.js";
 import { db } from "../../src/db/index.js";
 import {
   providerQuoteRequests,
-  quotePriorities,
+  quotePitches,
 } from "../../src/db/schema.js";
 
 describe("GET /orgs/quote-requests", () => {
@@ -60,48 +60,53 @@ describe("GET /orgs/quote-requests", () => {
     expect(res.body.providerQuoteRequests).toHaveLength(2);
   });
 
-  it("filters to rows scored for the given campaign_id", async () => {
+  it("filters to rows pitched under the given campaign_id", async () => {
     const inserted = await db
       .insert(providerQuoteRequests)
       .values([
         {
           provider: "featured",
           ingestionChannel: "api",
-          externalId: "ext-scored-a",
-          opportunityText: "scored for A",
+          externalId: "ext-pitched-a",
+          opportunityText: "pitched for A",
           orgId: TEST_ORG_A,
         },
         {
           provider: "featured",
           ingestionChannel: "api",
-          externalId: "ext-scored-b",
-          opportunityText: "scored for B",
+          externalId: "ext-pitched-b",
+          opportunityText: "pitched for B",
           orgId: TEST_ORG_A,
         },
         {
           provider: "featured",
           ingestionChannel: "api",
-          externalId: "ext-unscored",
-          opportunityText: "no priority",
+          externalId: "ext-unpitched",
+          opportunityText: "no pitch",
           orgId: TEST_ORG_A,
         },
       ])
-      .returning({ id: providerQuoteRequests.id, externalId: providerQuoteRequests.externalId });
+      .returning({
+        id: providerQuoteRequests.id,
+        externalId: providerQuoteRequests.externalId,
+      });
 
     const byExt = new Map(inserted.map((r) => [r.externalId, r.id]));
-    await db.insert(quotePriorities).values([
+    await db.insert(quotePitches).values([
       {
-        quoteRequestId: byExt.get("ext-scored-a")!,
+        quoteRequestId: byExt.get("ext-pitched-a")!,
         campaignId: TEST_CAMPAIGN_A,
-        brandId: TEST_BRAND,
-        score: "0.90",
+        brandIds: [TEST_BRAND],
+        status: "submitted",
+        deliveryMethod: "email_reply",
         orgId: TEST_ORG_A,
       },
       {
-        quoteRequestId: byExt.get("ext-scored-b")!,
+        quoteRequestId: byExt.get("ext-pitched-b")!,
         campaignId: TEST_CAMPAIGN_B,
-        brandId: TEST_BRAND,
-        score: "0.80",
+        brandIds: [TEST_BRAND],
+        status: "submitted",
+        deliveryMethod: "email_reply",
         orgId: TEST_ORG_A,
       },
     ]);
@@ -112,15 +117,15 @@ describe("GET /orgs/quote-requests", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.providerQuoteRequests).toHaveLength(1);
-    expect(res.body.providerQuoteRequests[0].externalId).toBe("ext-scored-a");
+    expect(res.body.providerQuoteRequests[0].externalId).toBe("ext-pitched-a");
   });
 
-  it("returns empty list when campaign_id has no scored priorities", async () => {
+  it("returns empty list when campaign_id has no pitches", async () => {
     await db.insert(providerQuoteRequests).values({
       provider: "featured",
       ingestionChannel: "api",
       externalId: "ext-orphan",
-      opportunityText: "no campaign scoring",
+      opportunityText: "no campaign pitch",
       orgId: TEST_ORG_A,
     });
 

@@ -1,7 +1,8 @@
-import { and, eq, or, sql as drizzleSql } from "drizzle-orm";
+import { and, eq, inArray, or, sql as drizzleSql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   providerQuoteRequests,
+  quoteOpportunities,
   quotePitches,
   quotePriorities,
 } from "../db/schema.js";
@@ -15,6 +16,7 @@ import { getFeaturedCredentials } from "./key-service-client.js";
 import { ragScore } from "./chat-client.js";
 import { SHARED_EMAIL_ORG_ID } from "./inbound/process.js";
 import { computeFingerprint } from "./cluster/fingerprint.js";
+import { attachOrCreateCluster } from "./cluster/attach.js";
 
 export class KeyServiceError extends Error {
   constructor(message: string) {
@@ -42,8 +44,23 @@ export type PitchStatusValue =
   | "brand_missing_fields"
   | "insufficient_credits";
 
-export interface EligibleCandidate {
-  id: string;
+export const BLOCK_STATUSES: PitchStatusValue[] = [
+  "drafted",
+  "submitted",
+  "selected",
+  "published",
+  "not_selected",
+];
+
+/**
+ * A Gold cluster surfaced to the API. The visible text + outlet +
+ * deadline + delivery hints come from the silver "representative" row
+ * (picked per pickRepresentativeSilver — Featured-API capable rows
+ * preferred, then most recent email row).
+ */
+export interface EligibleOpportunity {
+  opportunityId: string;
+  representativeSilverId: string;
   provider: string;
   ingestionChannel: string;
   featuredQuestionId: number | null;
@@ -57,7 +74,7 @@ export interface EligibleCandidate {
   pitchStatus: PitchStatusValue | null;
 }
 
-export interface RankedCandidate extends EligibleCandidate {
+export interface RankedOpportunity extends EligibleOpportunity {
   score: number;
   whyRelevant: string | null;
 }
@@ -74,11 +91,17 @@ function safeParseDate(value: string | undefined | null): Date | null {
 }
 
 function featuredExternalId(o: FeaturedOpportunity): string {
-  if (typeof o.featuredQuestionId === "number") return String(o.featuredQuestionId);
+  if (typeof o.featuredQuestionId === "number")
+    return String(o.featuredQuestionId);
   if (o.pitchUrl) return o.pitchUrl;
   return computeFingerprint(o.opportunity ?? "", o.mediaOutlet);
 }
 
+/**
+ * Fetch live Featured opportunities and write through to silver +
+ * cluster into Gold via fingerprint. Idempotent on
+ * (provider, ingestion_channel, external_id).
+ */
 export async function ingestFeaturedToSilver(args: {
   orgId: string;
   userId?: string;
@@ -120,10 +143,20 @@ export async function ingestFeaturedToSilver(args: {
   );
   if (insertableOpps.length === 0) return;
 
-  await db
-    .insert(providerQuoteRequests)
-    .values(
-      insertableOpps.map((o) => ({
+  for (const o of insertableOpps) {
+    const text = o.opportunity!;
+    const outlet = o.mediaOutlet ?? null;
+    const fingerprint = computeFingerprint(text, outlet);
+    const cluster = await attachOrCreateCluster({
+      fingerprint,
+      canonicalText: text,
+      canonicalOutlet: outlet,
+      canonicalDeadline: safeParseDate(o.deadline),
+    });
+
+    await db
+      .insert(providerQuoteRequests)
+      .values({
         provider: "featured",
         ingestionChannel: "api" as const,
         externalId: featuredExternalId(o),
@@ -131,37 +164,83 @@ export async function ingestFeaturedToSilver(args: {
           typeof o.featuredQuestionId === "number"
             ? o.featuredQuestionId
             : null,
-        mediaOutlet: o.mediaOutlet ?? null,
-        opportunityText: o.opportunity,
+        mediaOutlet: outlet,
+        opportunityText: text,
         pitchUrl: o.pitchUrl ?? null,
         deadline: safeParseDate(o.deadline),
         raw: o,
+        quoteOpportunityId: cluster.id,
+        isCanonical: cluster.created,
+        fingerprint,
         orgId,
-      }))
-    )
-    .onConflictDoNothing({
-      target: [
-        providerQuoteRequests.provider,
-        providerQuoteRequests.ingestionChannel,
-        providerQuoteRequests.externalId,
-      ],
-    });
+      })
+      .onConflictDoNothing({
+        target: [
+          providerQuoteRequests.provider,
+          providerQuoteRequests.ingestionChannel,
+          providerQuoteRequests.externalId,
+        ],
+      });
+  }
+}
+
+interface SilverRow {
+  id: string;
+  provider: string;
+  ingestionChannel: string;
+  featuredQuestionId: number | null;
+  mediaOutlet: string | null;
+  journalistName: string | null;
+  opportunityText: string;
+  deadline: Date | null;
+  pitchUrl: string | null;
+  pitchEmail: string | null;
+  category: string | null;
+  quoteOpportunityId: string | null;
+  fetchedAt: Date;
+  isCanonical: boolean;
 }
 
 /**
- * Return every silver candidate for the org (+ shared email pool),
- * annotated with the latest pitchStatus seen for the brand. When
- * campaignId is provided, status scope is narrowed to that campaign.
- * No exclusion — the caller (dashboard) decides display.
+ * Pick the silver row that best represents a Gold cluster for outbound
+ * dispatch. Rule (per design decision):
+ *   1. Featured-API rows preferred (so reply uses Featured submitAnswer).
+ *   2. Otherwise, the most recently fetched silver row.
  */
-export async function fetchEligibleCandidates(args: {
-  orgId: string;
-  brandId: string;
-  campaignId?: string;
-}): Promise<EligibleCandidate[]> {
-  const { orgId, brandId, campaignId } = args;
+export function pickRepresentativeSilver<T extends SilverRow>(rows: T[]): T {
+  if (rows.length === 0) {
+    throw new Error(
+      "pickRepresentativeSilver: rows must be non-empty"
+    );
+  }
+  const featured = rows
+    .filter(
+      (r) => r.provider === "featured" && r.featuredQuestionId != null
+    )
+    .sort((a, b) => b.fetchedAt.getTime() - a.fetchedAt.getTime());
+  if (featured.length > 0) return featured[0];
+  const others = [...rows].sort(
+    (a, b) => b.fetchedAt.getTime() - a.fetchedAt.getTime()
+  );
+  return others[0];
+}
 
-  const candidates = await db
+/**
+ * Return every Gold cluster (quote_opportunities) reachable from the
+ * org's silver pool (own org_id OR SHARED_EMAIL_ORG_ID), collapsed to
+ * one row per Gold id via pickRepresentativeSilver. Each Gold row is
+ * annotated with the latest pitchStatus seen for the brandSet — exact
+ * canonical-sorted match. When campaignId is provided, status scope
+ * narrows to that campaign.
+ */
+export async function fetchEligibleOpportunities(args: {
+  orgId: string;
+  brandIds: string[];
+  campaignId?: string;
+}): Promise<EligibleOpportunity[]> {
+  const { orgId, brandIds, campaignId } = args;
+
+  const silverRows = await db
     .select({
       id: providerQuoteRequests.id,
       provider: providerQuoteRequests.provider,
@@ -174,6 +253,9 @@ export async function fetchEligibleCandidates(args: {
       pitchUrl: providerQuoteRequests.pitchUrl,
       pitchEmail: providerQuoteRequests.pitchEmail,
       category: providerQuoteRequests.category,
+      quoteOpportunityId: providerQuoteRequests.quoteOpportunityId,
+      fetchedAt: providerQuoteRequests.fetchedAt,
+      isCanonical: providerQuoteRequests.isCanonical,
     })
     .from(providerQuoteRequests)
     .where(
@@ -183,43 +265,91 @@ export async function fetchEligibleCandidates(args: {
       )
     );
 
+  const grouped = new Map<string, SilverRow[]>();
+  for (const r of silverRows) {
+    if (!r.quoteOpportunityId) continue;
+    const list = grouped.get(r.quoteOpportunityId) ?? [];
+    list.push(r);
+    grouped.set(r.quoteOpportunityId, list);
+  }
+
+  if (grouped.size === 0) return [];
+
+  const opportunityIds = Array.from(grouped.keys());
+
+  const goldRows = await db
+    .select({
+      id: quoteOpportunities.id,
+      canonicalText: quoteOpportunities.canonicalText,
+      canonicalOutlet: quoteOpportunities.canonicalOutlet,
+      canonicalDeadline: quoteOpportunities.canonicalDeadline,
+    })
+    .from(quoteOpportunities)
+    .where(inArray(quoteOpportunities.id, opportunityIds));
+
+  const goldById = new Map(goldRows.map((g) => [g.id, g]));
+
+  // Pitch lookup: exact-match on brand_ids canonical-sorted.
+  const pitchScope = campaignId
+    ? and(
+        eq(quotePitches.brandIds, brandIds),
+        eq(quotePitches.campaignId, campaignId),
+        inArray(quotePitches.quoteOpportunityId, opportunityIds)
+      )
+    : and(
+        eq(quotePitches.brandIds, brandIds),
+        inArray(quotePitches.quoteOpportunityId, opportunityIds)
+      );
+
   const pitches = await db
     .select({
-      quoteRequestId: quotePitches.quoteRequestId,
+      quoteOpportunityId: quotePitches.quoteOpportunityId,
       status: quotePitches.status,
       updatedAt: quotePitches.updatedAt,
     })
     .from(quotePitches)
-    .where(
-      campaignId
-        ? and(
-            eq(quotePitches.brandId, brandId),
-            eq(quotePitches.campaignId, campaignId)
-          )
-        : eq(quotePitches.brandId, brandId)
-    );
+    .where(pitchScope);
 
-  const latestByRequest = new Map<
+  const latestByGold = new Map<
     string,
     { status: PitchStatusValue; updatedAt: Date }
   >();
   for (const p of pitches) {
-    const prev = latestByRequest.get(p.quoteRequestId);
+    if (!p.quoteOpportunityId) continue;
+    const prev = latestByGold.get(p.quoteOpportunityId);
     if (!prev || prev.updatedAt < p.updatedAt) {
-      latestByRequest.set(p.quoteRequestId, {
+      latestByGold.set(p.quoteOpportunityId, {
         status: p.status,
         updatedAt: p.updatedAt,
       });
     }
   }
 
-  return candidates.map((c) => ({
-    ...c,
-    pitchStatus: latestByRequest.get(c.id)?.status ?? null,
-  }));
+  const out: EligibleOpportunity[] = [];
+  for (const [goldId, silvers] of grouped) {
+    const gold = goldById.get(goldId);
+    if (!gold) continue;
+    const rep = pickRepresentativeSilver(silvers);
+    out.push({
+      opportunityId: goldId,
+      representativeSilverId: rep.id,
+      provider: rep.provider,
+      ingestionChannel: rep.ingestionChannel,
+      featuredQuestionId: rep.featuredQuestionId,
+      mediaOutlet: rep.mediaOutlet ?? gold.canonicalOutlet,
+      journalistName: rep.journalistName,
+      opportunityText: rep.opportunityText ?? gold.canonicalText,
+      deadline: rep.deadline ?? gold.canonicalDeadline,
+      pitchUrl: rep.pitchUrl,
+      pitchEmail: rep.pitchEmail,
+      category: rep.category,
+      pitchStatus: latestByGold.get(goldId)?.status ?? null,
+    });
+  }
+
+  return out;
 }
 
-// chat-service POST /orgs/rag/score caps `documents` at 100 per request.
 const RAG_SCORE_BATCH_SIZE = 100;
 
 function chunk<T>(arr: T[], size: number): T[][] {
@@ -230,19 +360,24 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
-export async function rankCandidates(args: {
-  candidates: EligibleCandidate[];
+/**
+ * Rank Gold-level candidates against the brandSet. Score is per
+ * (opportunity, brandSet) — one row per opportunity. Persisted into
+ * quote_priorities keyed by (quote_opportunity_id, brand_ids[]).
+ */
+export async function rankOpportunities(args: {
+  candidates: EligibleOpportunity[];
   orgId: string;
-  brandId: string;
+  brandIds: string[];
   campaignId?: string;
   userId?: string;
   runId?: string;
   scoreThreshold: number;
-}): Promise<RankedCandidate[]> {
+}): Promise<RankedOpportunity[]> {
   const {
     candidates,
     orgId,
-    brandId,
+    brandIds,
     campaignId,
     userId,
     runId,
@@ -256,8 +391,11 @@ export async function rankCandidates(args: {
     batches.map((batch) =>
       ragScore(
         {
-          documents: batch.map((c) => ({ id: c.id, text: c.opportunityText })),
-          brandId,
+          documents: batch.map((c) => ({
+            id: c.opportunityId,
+            text: c.opportunityText,
+          })),
+          brandIds,
         },
         orgId,
         userId,
@@ -272,9 +410,9 @@ export async function rankCandidates(args: {
       .insert(quotePriorities)
       .values(
         mergedResults.map((r) => ({
-          quoteRequestId: r.id,
+          quoteOpportunityId: r.id,
+          brandIds,
           campaignId: campaignId ?? null,
-          brandId,
           score: r.score.toFixed(2),
           whyRelevant: r.whyRelevant ?? null,
           scoredByRunId: runId ?? null,
@@ -282,7 +420,10 @@ export async function rankCandidates(args: {
         }))
       )
       .onConflictDoUpdate({
-        target: [quotePriorities.quoteRequestId, quotePriorities.brandId],
+        target: [
+          quotePriorities.quoteOpportunityId,
+          quotePriorities.brandIds,
+        ],
         set: {
           score: drizzleSql`excluded.score`,
           whyRelevant: drizzleSql`excluded.why_relevant`,
@@ -297,7 +438,7 @@ export async function rankCandidates(args: {
 
   return candidates
     .map((c) => {
-      const result = resultById.get(c.id);
+      const result = resultById.get(c.opportunityId);
       return {
         ...c,
         score: result?.score ?? 0,

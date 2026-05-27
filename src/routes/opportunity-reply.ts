@@ -2,7 +2,11 @@ import { Router } from "express";
 import { and, eq, inArray, or } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
-import { providerQuoteRequests, quotePitches } from "../db/schema.js";
+import {
+  providerQuoteRequests,
+  quoteOpportunities,
+  quotePitches,
+} from "../db/schema.js";
 import {
   FeaturedClient,
   FeaturedRateLimitError,
@@ -24,6 +28,11 @@ import {
   EmailGatewayError,
 } from "../lib/email-gateway-client.js";
 import { SHARED_EMAIL_ORG_ID } from "../lib/inbound/process.js";
+import { pickRepresentativeSilver } from "../lib/opportunity-pipeline.js";
+import {
+  BrandIdsHeaderError,
+  parseBrandIdsHeader,
+} from "../lib/brand-ids.js";
 
 const FEATURED_PITCH_SUBMIT_COST = "featured-api-pitch-submit";
 
@@ -31,12 +40,10 @@ const PARAMS_SCHEMA = z.object({ id: z.string().uuid() });
 
 const BODY_SCHEMA = z.object({
   pitchContent: z.string().min(1),
-  brandId: z.string().uuid(),
   campaignId: z.string().uuid().optional(),
   subject: z.string().optional(),
 });
 
-// Statuses that prevent a new pitch — already in flight or terminal.
 const BLOCK_STATUSES: Array<
   | "drafted"
   | "submitted"
@@ -89,45 +96,68 @@ export function createOpportunityReplyRouter(
       res.status(400).json({ error: bodyParsed.error.message });
       return;
     }
-    const { id } = paramsParsed.data;
-    const { pitchContent, brandId, campaignId, subject } = bodyParsed.data;
+    let brandIds: string[];
+    try {
+      brandIds = parseBrandIdsHeader(req.headers["x-brand-id"]);
+    } catch (err) {
+      if (err instanceof BrandIdsHeaderError) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+
+    const { id: opportunityId } = paramsParsed.data;
+    const { pitchContent, campaignId, subject } = bodyParsed.data;
     const orgId = req.orgId!;
     const userId = req.userId;
     const runId = req.runId;
     const parentRunId = req.parentRunId ?? null;
 
-    const opportunityRows = await db
+    const goldRows = await db
+      .select()
+      .from(quoteOpportunities)
+      .where(eq(quoteOpportunities.id, opportunityId))
+      .limit(1);
+    const gold = goldRows[0];
+    if (!gold) {
+      res.status(404).json({ error: "Opportunity not found" });
+      return;
+    }
+
+    const silverRows = await db
       .select()
       .from(providerQuoteRequests)
       .where(
         and(
-          eq(providerQuoteRequests.id, id),
+          eq(providerQuoteRequests.quoteOpportunityId, opportunityId),
           or(
             eq(providerQuoteRequests.orgId, orgId),
             eq(providerQuoteRequests.orgId, SHARED_EMAIL_ORG_ID)
           )
         )
-      )
-      .limit(1);
+      );
 
-    const opportunity = opportunityRows[0];
-    if (!opportunity) {
-      res.status(404).json({ error: "Opportunity not found" });
+    if (silverRows.length === 0) {
+      res.status(404).json({
+        error:
+          "Opportunity has no silver rows accessible to this org",
+      });
       return;
     }
 
-    // Idempotency: brand-canonical, always. A pitch for (quote_request_id,
-    // brand_id) collapses across all campaigns of the brand — the DB
-    // partial unique enforces the same invariant, so any campaign-scoped
-    // check that lets a duplicate through would just trip 500 below.
+    const representative = pickRepresentativeSilver(silverRows);
+
+    // Idempotency: exact-match on (quote_opportunity_id, brand_ids[]).
+    // brandIds is canonical-sorted by parseBrandIdsHeader.
     const existingPitch = (
       await db
         .select()
         .from(quotePitches)
         .where(
           and(
-            eq(quotePitches.quoteRequestId, id),
-            eq(quotePitches.brandId, brandId),
+            eq(quotePitches.quoteOpportunityId, opportunityId),
+            eq(quotePitches.brandIds, brandIds),
             inArray(quotePitches.status, BLOCK_STATUSES)
           )
         )
@@ -145,13 +175,14 @@ export function createOpportunityReplyRouter(
       return;
     }
 
-    if (opportunity.provider === "featured") {
+    if (representative.provider === "featured") {
       await handleFeaturedReply({
         req,
         res,
-        opportunity,
+        opportunityId,
+        representative,
         pitchContent,
-        brandId,
+        brandIds,
         campaignId,
         orgId,
         userId,
@@ -166,10 +197,11 @@ export function createOpportunityReplyRouter(
     await handleEmailReply({
       req,
       res,
-      opportunity,
+      opportunityId,
+      representative,
       pitchContent,
       subject,
-      brandId,
+      brandIds,
       campaignId,
       orgId,
       userId,
@@ -181,7 +213,7 @@ export function createOpportunityReplyRouter(
   return router;
 }
 
-interface OpportunityRow {
+interface SilverRowFull {
   id: string;
   provider: string;
   featuredQuestionId: number | null;
@@ -195,9 +227,10 @@ interface OpportunityRow {
 async function handleFeaturedReply(args: {
   req: import("express").Request;
   res: import("express").Response;
-  opportunity: OpportunityRow;
+  opportunityId: string;
+  representative: SilverRowFull;
   pitchContent: string;
-  brandId: string;
+  brandIds: string[];
   campaignId?: string;
   orgId: string;
   userId?: string;
@@ -212,9 +245,10 @@ async function handleFeaturedReply(args: {
   const {
     req,
     res,
-    opportunity,
+    opportunityId,
+    representative,
     pitchContent,
-    brandId,
+    brandIds,
     campaignId,
     orgId,
     userId,
@@ -224,13 +258,17 @@ async function handleFeaturedReply(args: {
     fetchLogoBytes,
   } = args;
 
-  if (opportunity.featuredQuestionId == null) {
+  if (representative.featuredQuestionId == null) {
     res.status(400).json({
       error:
         "Featured opportunity missing featured_question_id; cannot submit",
     });
     return;
   }
+
+  // Featured profile is per-spokesperson; co-branded pitch uses the first
+  // brand (canonical-sorted) as the lead spokesperson identity.
+  const leadBrandId = brandIds[0];
 
   let credentials: FeaturedCredentials;
   let keySource: "org" | "platform";
@@ -263,7 +301,7 @@ async function handleFeaturedReply(args: {
         orgId,
         userId,
         runId,
-        brandId,
+        brandId: leadBrandId,
         campaignId,
         featureSlug: req.featureSlug,
         workflowSlug: req.workflowSlug,
@@ -289,7 +327,7 @@ async function handleFeaturedReply(args: {
   try {
     profile = await ensureFeaturedProfile({
       orgId,
-      brandId,
+      brandId: leadBrandId,
       client,
       fetchLogoBytes,
     });
@@ -307,7 +345,7 @@ async function handleFeaturedReply(args: {
   try {
     await client.submitAnswer({
       answer: pitchContent,
-      featuredQuestionId: opportunity.featuredQuestionId,
+      featuredQuestionId: representative.featuredQuestionId,
       profileId: profile.featuredProfileId,
     });
   } catch (err) {
@@ -318,15 +356,16 @@ async function handleFeaturedReply(args: {
     const [pitch] = await db
       .insert(quotePitches)
       .values({
-        quoteRequestId: opportunity.id,
-        featuredQuestionId: opportunity.featuredQuestionId,
+        quoteRequestId: representative.id,
+        quoteOpportunityId: opportunityId,
+        featuredQuestionId: representative.featuredQuestionId,
         featuredProfileId: profile.featuredProfileId,
         campaignId: campaignId ?? null,
-        brandId,
+        brandIds,
         draft: pitchContent,
         status: "error",
         deliveryMethod: "featured_api",
-        deliveryTarget: opportunity.pitchUrl ?? null,
+        deliveryTarget: representative.pitchUrl ?? null,
         error: (err as Error).message,
         parentRunId,
         runId: runId ?? null,
@@ -344,15 +383,16 @@ async function handleFeaturedReply(args: {
   const [pitch] = await db
     .insert(quotePitches)
     .values({
-      quoteRequestId: opportunity.id,
-      featuredQuestionId: opportunity.featuredQuestionId,
+      quoteRequestId: representative.id,
+      quoteOpportunityId: opportunityId,
+      featuredQuestionId: representative.featuredQuestionId,
       featuredProfileId: profile.featuredProfileId,
       campaignId: campaignId ?? null,
-      brandId,
+      brandIds,
       draft: pitchContent,
       status: "submitted",
       deliveryMethod: "featured_api",
-      deliveryTarget: opportunity.pitchUrl ?? null,
+      deliveryTarget: representative.pitchUrl ?? null,
       submittedAt: new Date(),
       parentRunId,
       runId: runId ?? null,
@@ -375,7 +415,7 @@ async function handleFeaturedReply(args: {
         {
           orgId,
           userId,
-          brandId,
+          brandId: leadBrandId,
           campaignId,
           featureSlug: req.featureSlug,
           workflowSlug: req.workflowSlug,
@@ -393,17 +433,18 @@ async function handleFeaturedReply(args: {
     status: "submitted",
     pitchId: pitch.id,
     deliveryMethod: "featured_api",
-    featuredQuestionId: opportunity.featuredQuestionId,
+    featuredQuestionId: representative.featuredQuestionId,
   });
 }
 
 async function handleEmailReply(args: {
   req: import("express").Request;
   res: import("express").Response;
-  opportunity: OpportunityRow;
+  opportunityId: string;
+  representative: SilverRowFull;
   pitchContent: string;
   subject?: string;
-  brandId: string;
+  brandIds: string[];
   campaignId?: string;
   orgId: string;
   userId?: string;
@@ -413,10 +454,11 @@ async function handleEmailReply(args: {
   const {
     req,
     res,
-    opportunity,
+    opportunityId,
+    representative,
     pitchContent,
     subject,
-    brandId,
+    brandIds,
     campaignId,
     orgId,
     userId,
@@ -424,7 +466,7 @@ async function handleEmailReply(args: {
     parentRunId,
   } = args;
 
-  if (!opportunity.pitchEmail) {
+  if (!representative.pitchEmail) {
     res.status(400).json({
       error:
         "Email-source opportunity missing pitch_email; cannot deliver reply",
@@ -432,17 +474,18 @@ async function handleEmailReply(args: {
     return;
   }
 
-  const { first, last } = splitName(opportunity.journalistName);
-  const company = opportunity.mediaOutlet ?? "(unknown outlet)";
+  const leadBrandId = brandIds[0];
+  const { first, last } = splitName(representative.journalistName);
+  const company = representative.mediaOutlet ?? "(unknown outlet)";
   const finalSubject =
     subject?.trim() ||
-    `Re: ${truncateForSubject(opportunity.opportunityText, 80)}`;
+    `Re: ${truncateForSubject(representative.opportunityText, 80)}`;
 
   let sendResult;
   try {
     sendResult = await sendTransactionalEmail(
       {
-        to: opportunity.pitchEmail,
+        to: representative.pitchEmail,
         recipientFirstName: first,
         recipientLastName: last,
         recipientCompany: company,
@@ -454,7 +497,7 @@ async function handleEmailReply(args: {
         userId,
         runId,
         campaignId,
-        brandId,
+        brandId: leadBrandId,
         workflowSlug: req.workflowSlug,
         featureSlug: req.featureSlug,
       }
@@ -464,13 +507,14 @@ async function handleEmailReply(args: {
       const [pitch] = await db
         .insert(quotePitches)
         .values({
-          quoteRequestId: opportunity.id,
+          quoteRequestId: representative.id,
+          quoteOpportunityId: opportunityId,
           campaignId: campaignId ?? null,
-          brandId,
+          brandIds,
           draft: pitchContent,
           status: "error",
           deliveryMethod: "email_reply",
-          deliveryTarget: opportunity.pitchEmail,
+          deliveryTarget: representative.pitchEmail,
           error: err.message,
           errorDetails: { status: err.status, details: err.details },
           parentRunId,
@@ -492,13 +536,14 @@ async function handleEmailReply(args: {
   const [pitch] = await db
     .insert(quotePitches)
     .values({
-      quoteRequestId: opportunity.id,
+      quoteRequestId: representative.id,
+      quoteOpportunityId: opportunityId,
       campaignId: campaignId ?? null,
-      brandId,
+      brandIds,
       draft: pitchContent,
       status: "submitted",
       deliveryMethod: "email_reply",
-      deliveryTarget: opportunity.pitchEmail,
+      deliveryTarget: representative.pitchEmail,
       outboundMessageId: sendResult.messageId ?? null,
       submittedAt: new Date(),
       parentRunId,

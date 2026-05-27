@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import {
+  BLOCK_STATUSES,
   FeaturedListError,
   KeyServiceError,
   fetchEligibleOpportunities,
@@ -20,13 +21,11 @@ import {
 
 const SCORE_THRESHOLD = Number(process.env.SCORE_THRESHOLD ?? "0.5");
 
-const OpportunityRankedRequestSchema = z.object({
+const OpportunityNextRequestSchema = z.object({
   campaignId: z.string().uuid().optional(),
-  limit: z.number().int().min(1).max(50).optional(),
-  offset: z.number().int().min(0).optional(),
 });
 
-export interface OpportunitiesRankedDeps {
+export interface OpportunitiesNextDeps {
   buildClient?: BuildFeaturedClient;
 }
 
@@ -37,13 +36,13 @@ function defaultBuildClient(
   return new FeaturedClient({ credentials, ...overrides });
 }
 
-export function createOpportunitiesRankedRouter(
-  deps: OpportunitiesRankedDeps = {}
+export function createOpportunitiesNextRouter(
+  deps: OpportunitiesNextDeps = {}
 ): Router {
   const router = Router();
   const buildClient = deps.buildClient ?? defaultBuildClient;
 
-  router.post("/orgs/opportunities/ranked", async (req, res) => {
+  router.post("/orgs/opportunities/next", async (req, res) => {
     let brandIds: string[];
     try {
       brandIds = parseBrandIdsHeader(req.headers["x-brand-id"]);
@@ -55,14 +54,12 @@ export function createOpportunitiesRankedRouter(
       throw err;
     }
 
-    const parsed = OpportunityRankedRequestSchema.safeParse(req.body ?? {});
+    const parsed = OpportunityNextRequestSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.message });
       return;
     }
     const { campaignId } = parsed.data;
-    const limit = parsed.data.limit ?? 20;
-    const offset = parsed.data.offset ?? 0;
     const orgId = req.orgId!;
     const userId = req.userId;
     const runId = req.runId;
@@ -72,7 +69,7 @@ export function createOpportunitiesRankedRouter(
         orgId,
         userId,
         runId,
-        callerPath: "/orgs/opportunities/ranked",
+        callerPath: "/orgs/opportunities/next",
         buildClient,
       });
     } catch (err) {
@@ -99,28 +96,36 @@ export function createOpportunitiesRankedRouter(
       scoreThreshold: SCORE_THRESHOLD,
     });
 
-    const total = ranked.length;
-    const page = ranked.slice(offset, offset + limit);
+    const available = ranked.find(
+      (r) =>
+        r.pitchStatus == null ||
+        !BLOCK_STATUSES.includes(r.pitchStatus)
+    );
+
+    if (!available) {
+      res.json({ found: false });
+      return;
+    }
 
     res.json({
-      status: "ok",
-      opportunities: page.map((r) => ({
-        opportunityId: r.opportunityId,
-        provider: r.provider,
-        ingestionChannel: r.ingestionChannel,
-        featuredQuestionId: r.featuredQuestionId,
-        mediaOutlet: r.mediaOutlet,
-        journalistName: r.journalistName,
-        opportunityText: r.opportunityText,
-        deadline: r.deadline ? r.deadline.toISOString() : null,
-        pitchUrl: r.pitchUrl,
-        pitchEmail: r.pitchEmail,
-        category: r.category,
-        score: r.score,
-        whyRelevant: r.whyRelevant,
-        pitchStatus: r.pitchStatus,
-      })),
-      total,
+      found: true,
+      opportunity: {
+        opportunityId: available.opportunityId,
+        provider: available.provider,
+        ingestionChannel: available.ingestionChannel,
+        featuredQuestionId: available.featuredQuestionId,
+        mediaOutlet: available.mediaOutlet,
+        journalistName: available.journalistName,
+        opportunityText: available.opportunityText,
+        deadline: available.deadline
+          ? available.deadline.toISOString()
+          : null,
+        pitchUrl: available.pitchUrl,
+        pitchEmail: available.pitchEmail,
+        category: available.category,
+        score: available.score,
+        whyRelevant: available.whyRelevant,
+      },
       brandIds,
     });
   });
@@ -128,4 +133,4 @@ export function createOpportunitiesRankedRouter(
   return router;
 }
 
-export default createOpportunitiesRankedRouter();
+export default createOpportunitiesNextRouter();
