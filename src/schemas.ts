@@ -101,8 +101,8 @@ export const QuotePitchSchema = z
     quoteOpportunityId: z.string().uuid().nullable(),
     featuredQuestionId: z.number().int().nullable(),
     featuredProfileId: z.number().int().nullable(),
-    campaignId: z.string().uuid(),
-    brandId: z.string().uuid(),
+    campaignId: z.string().uuid().nullable(),
+    brandIds: z.array(z.string().uuid()),
     draft: z.string().nullable(),
     pitchCharCount: z.number().int().nullable(),
     pitchAttempts: z.number().int().nullable(),
@@ -158,20 +158,22 @@ export const QuotePitchListQuerySchema = z.object({
 
 // ==================== Opportunity Workflow Schemas ====================
 
+export const OpportunityNextRequestSchema = z
+  .object({
+    campaignId: z.string().uuid().optional(),
+  })
+  .openapi("OpportunityNextRequest");
+
 export const OpportunityReplyRequestSchema = z
   .object({
     pitchContent: z.string().min(1),
-    brandId: z.string().uuid(),
     campaignId: z.string().uuid().optional(),
     subject: z.string().optional(),
   })
   .openapi("OpportunityReplyRequest");
 
-// ---------- Ranked opportunities (HITL queue) ----------
-
 export const OpportunityRankedRequestSchema = z
   .object({
-    brandId: z.string().uuid(),
     campaignId: z.string().uuid().optional(),
     limit: z.number().int().min(1).max(50).optional(),
     offset: z.number().int().min(0).optional(),
@@ -193,7 +195,7 @@ export const PitchStatusSchema = z
   ])
   .openapi("PitchStatus");
 
-export const RankedOpportunitySchema = z
+export const FullQuoteOpportunitySchema = z
   .object({
     opportunityId: z.string().uuid(),
     provider: z.string(),
@@ -208,52 +210,32 @@ export const RankedOpportunitySchema = z
     category: z.string().nullable(),
     score: z.number(),
     whyRelevant: z.string().nullable(),
-    pitchStatus: PitchStatusSchema.nullable(),
   })
-  .openapi("RankedOpportunity");
+  .openapi("FullQuoteOpportunity");
+
+export const RankedOpportunitySchema = FullQuoteOpportunitySchema.extend({
+  pitchStatus: PitchStatusSchema.nullable(),
+}).openapi("RankedOpportunity");
+
+export const OpportunityNextResponseSchema = z
+  .discriminatedUnion("found", [
+    z.object({ found: z.literal(false) }),
+    z.object({
+      found: z.literal(true),
+      opportunity: FullQuoteOpportunitySchema,
+      brandIds: z.array(z.string().uuid()),
+    }),
+  ])
+  .openapi("OpportunityNextResponse");
 
 export const OpportunityRankedResponseSchema = z
   .object({
     status: z.literal("ok"),
     opportunities: z.array(RankedOpportunitySchema),
     total: z.number().int(),
+    brandIds: z.array(z.string().uuid()),
   })
   .openapi("OpportunityRankedResponse");
-
-// ---------- Quote-request draft (HITL pitch generation) ----------
-
-export const QuoteRequestDraftRequestSchema = z
-  .object({
-    brandId: z.string().uuid(),
-    campaignId: z.string().uuid().optional(),
-    spokesperson: z.string().min(1).optional(),
-    expertiseTopics: z.string().min(1).optional(),
-    responseStyle: z.string().min(1).optional(),
-    companyContext: z.string().min(1).optional(),
-    valueProposition: z.string().min(1).optional(),
-    additionalContext: z.string().optional(),
-  })
-  .openapi("QuoteRequestDraftRequest");
-
-export const QuoteRequestDraftResponseSchema = z
-  .object({
-    pitch: z.string(),
-    charCount: z.number().int(),
-    attempts: z.number().int(),
-    tokensInput: z.number(),
-    tokensOutput: z.number(),
-  })
-  .openapi("QuoteRequestDraftResponse");
-
-export const ExpertQuotePitchLengthErrorResponseSchema = z
-  .object({
-    error: z.string(),
-    charCount: z.number().int(),
-    minChars: z.number().int(),
-    maxChars: z.number().int(),
-    attempts: z.number().int(),
-  })
-  .openapi("ExpertQuotePitchLengthErrorResponse");
 
 export const OpportunityReplyResponseSchema = z
   .object({
@@ -322,6 +304,15 @@ export const InboundEmailAcceptedResponseSchema = z
 
 const orgHeaders = z.object({
   "x-org-id": z.string().uuid(),
+  "x-brand-id": z
+    .string()
+    .describe(
+      "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted). All ranking, score caching, and pitch idempotency keys use the canonical brand_ids[] set."
+    ),
+});
+
+const orgHeadersOptionalBrand = z.object({
+  "x-org-id": z.string().uuid(),
 });
 
 registry.registerPath({
@@ -346,9 +337,41 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/orgs/opportunities/next",
+  summary:
+    "Return the single highest-scored Gold-cluster opportunity not yet pitched for the brand-set. Mirrors lead-service POST /orgs/buffer/next semantics. Brand identity flows via x-brand-id header (CSV when plural). Excludes opportunities with a non-retryable pitch (drafted/submitted/selected/published/not_selected) on the exact brand-set. Returns { found: false } when nothing eligible remains.",
+  security: [{ [apiKeyAuth.name]: [] }],
+  request: {
+    headers: orgHeaders,
+    body: {
+      content: {
+        "application/json": { schema: OpportunityNextRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Next available opportunity, or { found: false }",
+      content: {
+        "application/json": { schema: OpportunityNextResponseSchema },
+      },
+    },
+    400: {
+      description: "Validation error (missing/invalid x-brand-id header, bad body)",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    502: {
+      description: "Upstream service unavailable (key-service, Featured)",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/orgs/opportunities/ranked",
   summary:
-    "Return the top-N ranked opportunities for the brand (campaignId optional). RAG-scored, paginated, annotated with the latest pitchStatus seen for the brand. Used by the HITL public report queue (brand-scoped) and the in-dashboard HITL view (campaign-scoped).",
+    "Return paginated top-N Gold-cluster opportunities for the brand-set. Brand identity via x-brand-id header (CSV when plural). RAG-scored, paginated, annotated with the latest pitchStatus seen for the exact brand-set. Used by the HITL dashboard / public report queue. No exclusion — pitchStatus is surfaced as metadata.",
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
     headers: orgHeaders,
@@ -378,54 +401,9 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
-  path: "/orgs/quote-requests/{id}/draft",
-  summary:
-    "Generate an AI-drafted pitch for the given quote request via content-generation-service. Body accepts either brand-only `{ brandId }` (PR inputs resolved via brand-service extract-fields) or legacy `{ brandId, campaignId, spokesperson, expertiseTopics, responseStyle, companyContext, valueProposition, additionalContext? }`. Returns the drafted text without submitting — caller decides when/whether to submit via POST /orgs/opportunities/:id/reply.",
-  security: [{ [apiKeyAuth.name]: [] }],
-  request: {
-    headers: orgHeaders,
-    params: z.object({ id: z.string().uuid() }),
-    body: {
-      content: {
-        "application/json": { schema: QuoteRequestDraftRequestSchema },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: "Drafted pitch within the configured char range",
-      content: {
-        "application/json": { schema: QuoteRequestDraftResponseSchema },
-      },
-    },
-    400: {
-      description:
-        "Validation error or pitch length out of range after retry (passthrough from content-generation-service)",
-      content: {
-        "application/json": {
-          schema: z.union([
-            ErrorResponseSchema,
-            ExpertQuotePitchLengthErrorResponseSchema,
-          ]),
-        },
-      },
-    },
-    404: {
-      description: "Quote request not found for this org",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    502: {
-      description: "Upstream content-generation-service unavailable",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-  },
-});
-
-registry.registerPath({
-  method: "post",
   path: "/orgs/opportunities/{id}/reply",
   summary:
-    "Submit a pitch reply for the given opportunity. Body: `{ pitchContent, brandId, campaignId?, subject? }`. Dispatches to Featured submitAnswer (provider=featured) or email-gateway-service /orgs/send (other providers, e.g. haro). Idempotency: brand-scoped when campaignId absent (any non-retryable pitch by the brand returns already_submitted); campaign-scoped when campaignId present.",
+    "Submit a pitch reply for the given Gold-cluster opportunity. `id` = quote_opportunities.id. Brand identity via x-brand-id header (CSV when plural). Body: `{ pitchContent, campaignId?, subject? }`. The service picks a representative silver row from the cluster (Featured-API preferred, else most recently fetched email) and dispatches via Featured submitAnswer or email-gateway /orgs/send. Idempotency: exact-match on (quote_opportunity_id, sorted brand_ids[]). Co-branded pitch [A,B] is distinct from solo [A]. Block statuses: drafted/submitted/selected/published/not_selected.",
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
     headers: orgHeaders,
@@ -477,9 +455,9 @@ registry.registerPath({
 registry.registerPath({
   method: "get",
   path: "/orgs/quote-requests",
-  summary: "List quote requests for the org",
+  summary: "List silver quote requests for the org",
   security: [{ [apiKeyAuth.name]: [] }],
-  request: { headers: orgHeaders, query: QuoteRequestListQuerySchema },
+  request: { headers: orgHeadersOptionalBrand, query: QuoteRequestListQuerySchema },
   responses: {
     200: {
       description: "List of quote requests",
@@ -500,7 +478,7 @@ registry.registerPath({
   summary: "Aggregate stats for quote requests + pitches",
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
-    headers: orgHeaders,
+    headers: orgHeadersOptionalBrand,
     query: z.object({ campaign_id: z.string().uuid().optional() }),
   },
   responses: {
@@ -519,7 +497,7 @@ registry.registerPath({
   summary: "Get a single quote request",
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
-    headers: orgHeaders,
+    headers: orgHeadersOptionalBrand,
     params: z.object({ id: z.string().uuid() }),
   },
   responses: {
@@ -543,7 +521,7 @@ registry.registerPath({
   path: "/orgs/quote-pitches",
   summary: "List quote pitches for the org",
   security: [{ [apiKeyAuth.name]: [] }],
-  request: { headers: orgHeaders, query: QuotePitchListQuerySchema },
+  request: { headers: orgHeadersOptionalBrand, query: QuotePitchListQuerySchema },
   responses: {
     200: {
       description: "List of quote pitches",
@@ -562,7 +540,7 @@ registry.registerPath({
   summary: "Get a single quote pitch",
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
-    headers: orgHeaders,
+    headers: orgHeadersOptionalBrand,
     params: z.object({ id: z.string().uuid() }),
   },
   responses: {

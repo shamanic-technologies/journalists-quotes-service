@@ -12,6 +12,7 @@ import {
   createTestApp,
   AUTH_HEADERS,
   TEST_BRAND,
+  TEST_BRAND_B,
   TEST_CAMPAIGN_A,
   TEST_CAMPAIGN_B,
   TEST_ORG_A,
@@ -20,6 +21,7 @@ import { cleanTestData, closeDb } from "../helpers/test-db.js";
 import { db } from "../../src/db/index.js";
 import {
   providerQuoteRequests,
+  quoteOpportunities,
   quotePitches,
 } from "../../src/db/schema.js";
 import { eq } from "drizzle-orm";
@@ -73,29 +75,8 @@ vi.mock("../../src/lib/brand-client.js", () => ({
     createdAt: "2024-01-01T00:00:00Z",
     updatedAt: "2024-01-01T00:00:00Z",
   })),
-  extractFields: vi.fn(async () => ({
-    brands: [
-      {
-        brandId: "00000000-0000-0000-0000-0000000000cc",
-        domain: "test-brand.com",
-        name: "Test Brand",
-        brandUrl: "https://test-brand.com",
-      },
-    ],
-    fields: {},
-  })),
-  BrandServiceError: class extends Error {
-    status: number;
-    body: string;
-    constructor(status: number, message: string, body: string) {
-      super(message);
-      this.status = status;
-      this.body = body;
-    }
-  },
 }));
 
-// Stub fetch for email-gateway-client `sendTransactionalEmail` calls.
 type FetchMock = ReturnType<typeof vi.fn>;
 let fetchMock: FetchMock;
 
@@ -106,6 +87,63 @@ const fetchLogoBytes = vi.fn(async () => ({
 }));
 
 let state: MockFeaturedState;
+
+async function seedFeaturedCluster(featuredQuestionId: number) {
+  const fingerprint = `fp-featured-${featuredQuestionId}`;
+  const [opp] = await db
+    .insert(quoteOpportunities)
+    .values({
+      fingerprint,
+      canonicalText: "Featured demand",
+      canonicalOutlet: "Featured Outlet",
+    })
+    .returning();
+  const [silver] = await db
+    .insert(providerQuoteRequests)
+    .values({
+      provider: "featured",
+      ingestionChannel: "api",
+      externalId: String(featuredQuestionId),
+      featuredQuestionId,
+      opportunityText: "Featured demand",
+      mediaOutlet: "Featured Outlet",
+      orgId: TEST_ORG_A,
+      quoteOpportunityId: opp.id,
+      fingerprint,
+      isCanonical: true,
+    })
+    .returning();
+  return { opp, silver };
+}
+
+async function seedHaroCluster(externalId: string) {
+  const fingerprint = `fp-haro-${externalId}`;
+  const [opp] = await db
+    .insert(quoteOpportunities)
+    .values({
+      fingerprint,
+      canonicalText: "HARO query about ergonomics",
+      canonicalOutlet: "Lifehacker",
+    })
+    .returning();
+  const [silver] = await db
+    .insert(providerQuoteRequests)
+    .values({
+      provider: "haro",
+      ingestionChannel: "email",
+      externalId,
+      opportunityText: "HARO query about ergonomics",
+      mediaOutlet: "Lifehacker",
+      journalistName: "Jane Doe",
+      pitchEmail: `reply+${externalId}@helpareporter.com`,
+      orgId: SHARED_EMAIL_ORG_ID,
+      quoteOpportunityId: opp.id,
+      fingerprint,
+      isCanonical: true,
+    })
+    .returning();
+  return { opp, silver };
+}
 
 describe("POST /orgs/opportunities/:id/reply", () => {
   beforeAll(async () => {
@@ -141,51 +179,14 @@ describe("POST /orgs/opportunities/:id/reply", () => {
     });
   }
 
-  async function seedFeaturedSilver(featuredQuestionId: number) {
-    const [row] = await db
-      .insert(providerQuoteRequests)
-      .values({
-        provider: "featured",
-        ingestionChannel: "api",
-        externalId: String(featuredQuestionId),
-        featuredQuestionId,
-        opportunityText: "Featured demand",
-        mediaOutlet: "Featured Outlet",
-        orgId: TEST_ORG_A,
-      })
-      .returning();
-    return row;
-  }
-
-  async function seedHaroSilver(externalId: string) {
-    const [row] = await db
-      .insert(providerQuoteRequests)
-      .values({
-        provider: "haro",
-        ingestionChannel: "email",
-        externalId,
-        opportunityText: "HARO query about ergonomics",
-        mediaOutlet: "Lifehacker",
-        journalistName: "Jane Doe",
-        pitchEmail: `reply+${externalId}@helpareporter.com`,
-        orgId: SHARED_EMAIL_ORG_ID,
-      })
-      .returning();
-    return row;
-  }
-
-  it("dispatches Featured opportunity via FeaturedClient.submitAnswer", async () => {
-    const silver = await seedFeaturedSilver(5050);
+  it("dispatches Featured opportunity via FeaturedClient.submitAnswer (id = Gold cluster id)", async () => {
+    const { opp } = await seedFeaturedCluster(5050);
     const pitchContent = "P".repeat(200);
 
     const res = await request(app())
-      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .post(`/orgs/opportunities/${opp.id}/reply`)
       .set(AUTH_HEADERS)
-      .send({
-        pitchContent,
-        brandId: TEST_BRAND,
-        campaignId: TEST_CAMPAIGN_A,
-      });
+      .send({ pitchContent, campaignId: TEST_CAMPAIGN_A });
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("submitted");
@@ -200,25 +201,24 @@ describe("POST /orgs/opportunities/:id/reply", () => {
       .where(eq(quotePitches.id, res.body.pitchId));
     expect(pitches[0].status).toBe("submitted");
     expect(pitches[0].deliveryMethod).toBe("featured_api");
+    expect(pitches[0].brandIds).toEqual([TEST_BRAND]);
+    expect(pitches[0].quoteOpportunityId).toBe(opp.id);
   });
 
-  it("dispatches HARO opportunity via email-gateway /orgs/send", async () => {
-    const silver = await seedHaroSilver("uuid-haro-1");
+  it("dispatches HARO opportunity via email-gateway /orgs/send (id = Gold cluster id)", async () => {
+    const { opp } = await seedHaroCluster("uuid-haro-1");
     const pitchContent = "Pitching this expert. " + "P".repeat(120);
 
     const res = await request(app())
-      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .post(`/orgs/opportunities/${opp.id}/reply`)
       .set(AUTH_HEADERS)
-      .send({
-        pitchContent,
-        brandId: TEST_BRAND,
-        campaignId: TEST_CAMPAIGN_A,
-      });
+      .send({ pitchContent, campaignId: TEST_CAMPAIGN_A });
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("submitted");
     expect(res.body.deliveryMethod).toBe("email_reply");
     expect(res.body.outboundMessageId).toBe("outbound-msg-123");
+
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const fetchArgs = fetchMock.mock.calls[0];
     expect(String(fetchArgs[0])).toContain("/orgs/send");
@@ -236,36 +236,102 @@ describe("POST /orgs/opportunities/:id/reply", () => {
     expect(pitches[0].deliveryTarget).toBe(
       "reply+uuid-haro-1@helpareporter.com"
     );
+    expect(pitches[0].brandIds).toEqual([TEST_BRAND]);
+  });
+
+  it("picks Featured silver representative when cluster has both Featured + email silvers", async () => {
+    const { opp } = await seedHaroCluster("uuid-mixed");
+    // Attach a Featured silver row to the SAME cluster.
+    await db.insert(providerQuoteRequests).values({
+      provider: "featured",
+      ingestionChannel: "api",
+      externalId: "mixed-9999",
+      featuredQuestionId: 9999,
+      opportunityText: "HARO query about ergonomics",
+      mediaOutlet: "Lifehacker",
+      orgId: TEST_ORG_A,
+      quoteOpportunityId: opp.id,
+      fingerprint: "fp-haro-uuid-mixed",
+    });
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${opp.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
+
+    // Featured preferred → Featured path
+    expect(res.status).toBe(200);
+    expect(res.body.deliveryMethod).toBe("featured_api");
+    expect(state.submitted[0].featuredQuestionId).toBe(9999);
+  });
+
+  it("picks most recently fetched email silver when cluster has only email silvers", async () => {
+    const fingerprint = "fp-haro-multi-email";
+    const [opp] = await db
+      .insert(quoteOpportunities)
+      .values({ fingerprint, canonicalText: "x" })
+      .returning();
+    await db.insert(providerQuoteRequests).values({
+      provider: "haro",
+      ingestionChannel: "email",
+      externalId: "older-haro",
+      opportunityText: "x",
+      mediaOutlet: "Older Outlet",
+      journalistName: "Old Reporter",
+      pitchEmail: "reply+older@helpareporter.com",
+      orgId: SHARED_EMAIL_ORG_ID,
+      quoteOpportunityId: opp.id,
+      fingerprint,
+      fetchedAt: new Date("2026-01-01"),
+    });
+    await db.insert(providerQuoteRequests).values({
+      provider: "haro",
+      ingestionChannel: "email",
+      externalId: "newer-haro",
+      opportunityText: "x",
+      mediaOutlet: "Newer Outlet",
+      journalistName: "New Reporter",
+      pitchEmail: "reply+newer@helpareporter.com",
+      orgId: SHARED_EMAIL_ORG_ID,
+      quoteOpportunityId: opp.id,
+      fingerprint,
+      fetchedAt: new Date("2026-01-05"),
+    });
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${opp.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
+
+    expect(res.status).toBe(200);
+    expect(res.body.deliveryMethod).toBe("email_reply");
+    const sentBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(sentBody.to).toBe("reply+newer@helpareporter.com");
   });
 
   it("returns 404 for opportunity not found", async () => {
     const res = await request(app())
       .post(`/orgs/opportunities/00000000-0000-0000-0000-00000000dead/reply`)
       .set(AUTH_HEADERS)
-      .send({
-        pitchContent: "x".repeat(200),
-        brandId: TEST_BRAND,
-        campaignId: TEST_CAMPAIGN_A,
-      });
+      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
     expect(res.status).toBe(404);
   });
 
-  it("is idempotent: second call with same campaign returns already_submitted", async () => {
-    const silver = await seedHaroSilver("uuid-haro-2");
+  it("idempotent: second call with same (opp, brand-set, campaign) returns already_submitted", async () => {
+    const { opp } = await seedHaroCluster("uuid-haro-2");
     const body = {
       pitchContent: "x".repeat(200),
-      brandId: TEST_BRAND,
       campaignId: TEST_CAMPAIGN_A,
     };
 
     const first = await request(app())
-      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .post(`/orgs/opportunities/${opp.id}/reply`)
       .set(AUTH_HEADERS)
       .send(body);
     expect(first.body.status).toBe("submitted");
 
     const second = await request(app())
-      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .post(`/orgs/opportunities/${opp.id}/reply`)
       .set(AUTH_HEADERS)
       .send(body);
     expect(second.body.status).toBe("already_submitted");
@@ -275,9 +341,62 @@ describe("POST /orgs/opportunities/:id/reply", () => {
     expect(pitches).toHaveLength(1);
   });
 
-  it("returns 402 and does NOT call Featured submitAnswer when billing is insufficient for a featured reply", async () => {
-    const silver = await seedFeaturedSilver(7777);
-    const { authorizeCredit } = await import("../../src/lib/billing-client.js");
+  it("co-brand pitch [A,B] is distinct from solo pitch [A] for idempotency", async () => {
+    const { opp } = await seedHaroCluster("uuid-co-brand");
+
+    // Solo brand A pitch first.
+    const solo = await request(app())
+      .post(`/orgs/opportunities/${opp.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({ pitchContent: "S".repeat(200), campaignId: TEST_CAMPAIGN_A });
+    expect(solo.body.status).toBe("submitted");
+
+    // Co-brand [A, B] pitch must NOT be blocked.
+    const headers = { ...AUTH_HEADERS } as Record<string, string>;
+    headers["x-brand-id"] = `${TEST_BRAND},${TEST_BRAND_B}`;
+    const coBrand = await request(app())
+      .post(`/orgs/opportunities/${opp.id}/reply`)
+      .set(headers)
+      .send({ pitchContent: "C".repeat(200), campaignId: TEST_CAMPAIGN_A });
+    expect(coBrand.body.status).toBe("submitted");
+    expect(coBrand.body.pitchId).not.toBe(solo.body.pitchId);
+
+    const pitches = await db.select().from(quotePitches);
+    expect(pitches).toHaveLength(2);
+    const sortedSets = pitches
+      .map((p) => p.brandIds.slice().sort())
+      .map((s) => JSON.stringify(s));
+    expect(sortedSets).toContain(JSON.stringify([TEST_BRAND]));
+    expect(sortedSets).toContain(
+      JSON.stringify([TEST_BRAND, TEST_BRAND_B].sort())
+    );
+  });
+
+  it("persists brand_ids canonical-sorted regardless of header input order", async () => {
+    const { opp } = await seedHaroCluster("uuid-sort");
+    const headers = { ...AUTH_HEADERS } as Record<string, string>;
+    headers["x-brand-id"] = `${TEST_BRAND_B},${TEST_BRAND}`;
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${opp.id}/reply`)
+      .set(headers)
+      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
+    expect(res.body.status).toBe("submitted");
+
+    const pitch = (
+      await db
+        .select()
+        .from(quotePitches)
+        .where(eq(quotePitches.id, res.body.pitchId))
+    )[0];
+    expect(pitch.brandIds).toEqual([TEST_BRAND, TEST_BRAND_B].sort());
+  });
+
+  it("returns 402 and does NOT call Featured submitAnswer when billing is insufficient", async () => {
+    const { opp } = await seedFeaturedCluster(7777);
+    const { authorizeCredit } = await import(
+      "../../src/lib/billing-client.js"
+    );
     (authorizeCredit as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       sufficient: false,
       balance_cents: 0,
@@ -285,13 +404,9 @@ describe("POST /orgs/opportunities/:id/reply", () => {
     });
 
     const res = await request(app())
-      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .post(`/orgs/opportunities/${opp.id}/reply`)
       .set(AUTH_HEADERS)
-      .send({
-        pitchContent: "x".repeat(200),
-        brandId: TEST_BRAND,
-        campaignId: TEST_CAMPAIGN_A,
-      });
+      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
 
     expect(res.status).toBe(402);
     expect(res.body.error).toMatch(/insufficient credit/);
@@ -301,19 +416,15 @@ describe("POST /orgs/opportunities/:id/reply", () => {
   });
 
   it("records featured-api-pitch-submit cost after a successful featured reply", async () => {
-    const silver = await seedFeaturedSilver(8888);
+    const { opp } = await seedFeaturedCluster(8888);
     const { addCosts } = await import("../../src/lib/runs-client.js");
     const mocked = addCosts as unknown as ReturnType<typeof vi.fn>;
     mocked.mockClear();
 
     const res = await request(app())
-      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .post(`/orgs/opportunities/${opp.id}/reply`)
       .set(AUTH_HEADERS)
-      .send({
-        pitchContent: "x".repeat(200),
-        brandId: TEST_BRAND,
-        campaignId: TEST_CAMPAIGN_A,
-      });
+      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("submitted");
@@ -330,7 +441,7 @@ describe("POST /orgs/opportunities/:id/reply", () => {
   });
 
   it("skips billing-service authorize and records costSource='org' when keySource is 'org'", async () => {
-    const silver = await seedFeaturedSilver(6060);
+    const { opp } = await seedFeaturedCluster(6060);
     const { getFeaturedCredentials } = await import(
       "../../src/lib/key-service-client.js"
     );
@@ -349,13 +460,9 @@ describe("POST /orgs/opportunities/:id/reply", () => {
     addCostsMock.mockClear();
 
     const res = await request(app())
-      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .post(`/orgs/opportunities/${opp.id}/reply`)
       .set(AUTH_HEADERS)
-      .send({
-        pitchContent: "x".repeat(200),
-        brandId: TEST_BRAND,
-        campaignId: TEST_CAMPAIGN_A,
-      });
+      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("submitted");
@@ -372,37 +479,30 @@ describe("POST /orgs/opportunities/:id/reply", () => {
     ]);
   });
 
-  it("does NOT call billing-service on email-reply path (no Featured API spend)", async () => {
-    const silver = await seedHaroSilver("uuid-haro-billing");
+  it("does NOT call billing-service on email-reply path", async () => {
+    const { opp } = await seedHaroCluster("uuid-haro-billing");
     const { authorizeCredit } = await import("../../src/lib/billing-client.js");
     const authorized = authorizeCredit as unknown as ReturnType<typeof vi.fn>;
     authorized.mockClear();
 
     const res = await request(app())
-      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .post(`/orgs/opportunities/${opp.id}/reply`)
       .set(AUTH_HEADERS)
-      .send({
-        pitchContent: "x".repeat(200),
-        brandId: TEST_BRAND,
-        campaignId: TEST_CAMPAIGN_A,
-      });
+      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
 
     expect(res.status).toBe(200);
     expect(res.body.deliveryMethod).toBe("email_reply");
     expect(authorized).not.toHaveBeenCalled();
   });
 
-  it("brand-only body (no campaignId) submits via featured_api branch and persists pitch with campaign_id NULL", async () => {
-    const silver = await seedFeaturedSilver(5151);
+  it("brand-only body (no campaignId) submits + persists pitch with campaign_id NULL", async () => {
+    const { opp } = await seedFeaturedCluster(5151);
     const pitchContent = "B".repeat(220);
 
     const res = await request(app())
-      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .post(`/orgs/opportunities/${opp.id}/reply`)
       .set(AUTH_HEADERS)
-      .send({
-        pitchContent,
-        brandId: TEST_BRAND,
-      });
+      .send({ pitchContent });
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("submitted");
@@ -413,97 +513,31 @@ describe("POST /orgs/opportunities/:id/reply", () => {
       .from(quotePitches)
       .where(eq(quotePitches.id, res.body.pitchId));
     expect(pitches[0].campaignId).toBeNull();
-    expect(pitches[0].brandId).toBe(TEST_BRAND);
+    expect(pitches[0].brandIds).toEqual([TEST_BRAND]);
   });
 
-  it("brand-only body submits via email_reply branch and persists pitch with campaign_id NULL", async () => {
-    const silver = await seedHaroSilver("uuid-haro-brandonly");
-    const pitchContent = "Pitching the brand-only way. " + "P".repeat(120);
-
-    const res = await request(app())
-      .post(`/orgs/opportunities/${silver.id}/reply`)
-      .set(AUTH_HEADERS)
-      .send({ pitchContent, brandId: TEST_BRAND });
-
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("submitted");
-    expect(res.body.deliveryMethod).toBe("email_reply");
-
-    const pitches = await db.select().from(quotePitches);
-    expect(pitches).toHaveLength(1);
-    expect(pitches[0].campaignId).toBeNull();
-  });
-
-  it("brand-only call returns already_submitted when a prior pitch by ANOTHER campaign of the brand is non-retryable", async () => {
-    const silver = await seedHaroSilver("uuid-haro-cross-campaign");
-
-    // Prior pitch under CAMPAIGN_A, status submitted (blocking).
-    await db.insert(quotePitches).values({
-      quoteRequestId: silver.id,
-      campaignId: TEST_CAMPAIGN_A,
-      brandId: TEST_BRAND,
-      draft: "earlier pitch",
-      status: "submitted",
-      deliveryMethod: "email_reply",
-      orgId: TEST_ORG_A,
-    });
-
-    // Brand-only call (no campaignId) must surface already_submitted.
-    const res = await request(app())
-      .post(`/orgs/opportunities/${silver.id}/reply`)
-      .set(AUTH_HEADERS)
-      .send({ pitchContent: "y".repeat(200), brandId: TEST_BRAND });
-
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("already_submitted");
-  });
-
-  it("campaign-scoped call returns already_submitted when ANY campaign of the brand already pitched (brand-canonical dedup)", async () => {
-    const silver = await seedHaroSilver("uuid-haro-isolated");
+  it("retryable status (error) does NOT block a new pitch on same brand-set", async () => {
+    const { opp } = await seedHaroCluster("uuid-haro-retryable");
 
     await db.insert(quotePitches).values({
-      quoteRequestId: silver.id,
+      quoteRequestId: (
+        await db
+          .select()
+          .from(providerQuoteRequests)
+          .where(eq(providerQuoteRequests.externalId, "uuid-haro-retryable"))
+      )[0].id,
+      quoteOpportunityId: opp.id,
       campaignId: TEST_CAMPAIGN_A,
-      brandId: TEST_BRAND,
-      draft: "earlier pitch",
-      status: "submitted",
+      brandIds: [TEST_BRAND],
+      status: "error",
       deliveryMethod: "email_reply",
       orgId: TEST_ORG_A,
     });
 
     const res = await request(app())
-      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .post(`/orgs/opportunities/${opp.id}/reply`)
       .set(AUTH_HEADERS)
-      .send({
-        pitchContent: "y".repeat(200),
-        brandId: TEST_BRAND,
-        campaignId: TEST_CAMPAIGN_B,
-      });
-
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("already_submitted");
-  });
-
-  it("retryable status (length_violation) does NOT block a new pitch", async () => {
-    const silver = await seedHaroSilver("uuid-haro-retryable");
-
-    await db.insert(quotePitches).values({
-      quoteRequestId: silver.id,
-      campaignId: TEST_CAMPAIGN_A,
-      brandId: TEST_BRAND,
-      status: "length_violation",
-      deliveryMethod: "email_reply",
-      orgId: TEST_ORG_A,
-    });
-
-    const res = await request(app())
-      .post(`/orgs/opportunities/${silver.id}/reply`)
-      .set(AUTH_HEADERS)
-      .send({
-        pitchContent: "z".repeat(200),
-        brandId: TEST_BRAND,
-        campaignId: TEST_CAMPAIGN_A,
-      });
+      .send({ pitchContent: "z".repeat(200), campaignId: TEST_CAMPAIGN_A });
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("submitted");
@@ -511,20 +545,16 @@ describe("POST /orgs/opportunities/:id/reply", () => {
 
   it("returns 502 + error pitch row when email-gateway fails", async () => {
     fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({ error: "internal" }),
-        { status: 503, headers: { "content-type": "application/json" } }
-      )
+      new Response(JSON.stringify({ error: "internal" }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      })
     );
-    const silver = await seedHaroSilver("uuid-haro-3");
+    const { opp } = await seedHaroCluster("uuid-haro-3");
     const res = await request(app())
-      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .post(`/orgs/opportunities/${opp.id}/reply`)
       .set(AUTH_HEADERS)
-      .send({
-        pitchContent: "x".repeat(200),
-        brandId: TEST_BRAND,
-        campaignId: TEST_CAMPAIGN_A,
-      });
+      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
     expect(res.status).toBe(502);
     expect(res.body.status).toBe("error");
 
@@ -532,5 +562,17 @@ describe("POST /orgs/opportunities/:id/reply", () => {
     expect(pitches).toHaveLength(1);
     expect(pitches[0].status).toBe("error");
     expect(pitches[0].deliveryMethod).toBe("email_reply");
+  });
+
+  it("rejects when x-brand-id header is missing", async () => {
+    const { opp } = await seedHaroCluster("uuid-no-brand");
+    const headers = { ...AUTH_HEADERS } as Record<string, string>;
+    delete headers["x-brand-id"];
+    const res = await request(app())
+      .post(`/orgs/opportunities/${opp.id}/reply`)
+      .set(headers)
+      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/x-brand-id/);
   });
 });

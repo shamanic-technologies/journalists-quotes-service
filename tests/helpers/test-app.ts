@@ -3,6 +3,10 @@ import express from "express";
 import cors from "cors";
 import healthRoutes from "../../src/routes/health.js";
 import {
+  createOpportunitiesNextRouter,
+  type OpportunitiesNextDeps,
+} from "../../src/routes/opportunities-next.js";
+import {
   createOpportunitiesRankedRouter,
   type OpportunitiesRankedDeps,
 } from "../../src/routes/opportunities-ranked.js";
@@ -11,10 +15,6 @@ import {
   type OpportunityReplyDeps,
 } from "../../src/routes/opportunity-reply.js";
 import quoteRequestsRoutes from "../../src/routes/quote-requests.js";
-import {
-  createQuoteRequestDraftRouter,
-  type QuoteRequestDraftDeps,
-} from "../../src/routes/quote-request-draft.js";
 import quotePitchesRoutes from "../../src/routes/quote-pitches.js";
 import processInboundEmailsRoutes from "../../src/routes/process-inbound-emails.js";
 import inboundEmailRoutes from "../../src/routes/webhooks/inbound-email.js";
@@ -26,13 +26,9 @@ import {
 import { hmacVerify } from "../../src/middleware/hmac-verify.js";
 
 export interface TestAppDeps {
+  opportunitiesNextDeps?: OpportunitiesNextDeps;
   opportunitiesRankedDeps?: OpportunitiesRankedDeps;
   opportunityReplyDeps?: OpportunityReplyDeps;
-  quoteRequestDraftDeps?: QuoteRequestDraftDeps;
-  /**
-   * Skip HMAC verification on /webhooks/inbound-email when tests want to
-   * exercise the route without computing a signature.
-   */
   skipHmacVerify?: boolean;
 }
 
@@ -61,9 +57,9 @@ export function createTestApp(deps: TestAppDeps = {}) {
   app.use(processInboundEmailsRoutes);
 
   app.use("/orgs", apiKeyAuth, requireOrgId, withRunTracking);
+  app.use(createOpportunitiesNextRouter(deps.opportunitiesNextDeps));
   app.use(createOpportunitiesRankedRouter(deps.opportunitiesRankedDeps));
   app.use(createOpportunityReplyRouter(deps.opportunityReplyDeps));
-  app.use(createQuoteRequestDraftRouter(deps.quoteRequestDraftDeps));
   app.use(quoteRequestsRoutes);
   app.use(quotePitchesRoutes);
 
@@ -91,6 +87,7 @@ export const TEST_ORG_B = "00000000-0000-0000-0000-00000000000b";
 export const TEST_USER = "00000000-0000-0000-0000-0000000000aa";
 export const TEST_PARENT_RUN = "00000000-0000-0000-0000-0000000000bb";
 export const TEST_BRAND = "00000000-0000-0000-0000-0000000000cc";
+export const TEST_BRAND_B = "00000000-0000-0000-0000-0000000000cd";
 export const TEST_CAMPAIGN_A = "00000000-0000-0000-0000-0000000000d1";
 export const TEST_CAMPAIGN_B = "00000000-0000-0000-0000-0000000000d2";
 
@@ -99,6 +96,7 @@ export const AUTH_HEADERS = {
   "x-org-id": TEST_ORG_A,
   "x-user-id": TEST_USER,
   "x-run-id": TEST_PARENT_RUN,
+  "x-brand-id": TEST_BRAND,
 };
 
 export const AUTH_HEADERS_ORG_B = {

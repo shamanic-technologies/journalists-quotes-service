@@ -1,13 +1,10 @@
-import { and, eq, sql as drizzleSql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import {
-  inboundEmails,
-  providerQuoteRequests,
-  quoteOpportunities,
-} from "../../db/schema.js";
+import { inboundEmails, providerQuoteRequests } from "../../db/schema.js";
 import { PostmarkInboundWebhookSchema } from "../../schemas.js";
 import { getParser } from "./parsers/index.js";
 import { computeFingerprint } from "../cluster/fingerprint.js";
+import { attachOrCreateCluster } from "../cluster/attach.js";
 
 /**
  * Sentinel org_id for email-sourced opportunities. The same HARO query is
@@ -149,45 +146,3 @@ export async function processInboundEmails(
   };
 }
 
-async function attachOrCreateCluster(input: {
-  fingerprint: string;
-  canonicalText: string;
-  canonicalOutlet: string | null;
-  canonicalDeadline: Date | null;
-}): Promise<{ id: string; created: boolean }> {
-  const existing = await db
-    .select({ id: quoteOpportunities.id })
-    .from(quoteOpportunities)
-    .where(eq(quoteOpportunities.fingerprint, input.fingerprint))
-    .limit(1);
-
-  if (existing.length > 0) {
-    await db
-      .update(quoteOpportunities)
-      .set({ lastSeenAt: drizzleSql`now()` })
-      .where(eq(quoteOpportunities.id, existing[0].id));
-    return { id: existing[0].id, created: false };
-  }
-
-  const [row] = await db
-    .insert(quoteOpportunities)
-    .values({
-      fingerprint: input.fingerprint,
-      canonicalText: input.canonicalText,
-      canonicalOutlet: input.canonicalOutlet,
-      canonicalDeadline: input.canonicalDeadline,
-      clusterMethod: "fingerprint",
-    })
-    .onConflictDoNothing({ target: quoteOpportunities.fingerprint })
-    .returning({ id: quoteOpportunities.id });
-
-  if (row) return { id: row.id, created: true };
-
-  // Race: another concurrent insert won. Re-read.
-  const refetch = await db
-    .select({ id: quoteOpportunities.id })
-    .from(quoteOpportunities)
-    .where(eq(quoteOpportunities.fingerprint, input.fingerprint))
-    .limit(1);
-  return { id: refetch[0].id, created: false };
-}

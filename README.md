@@ -1,13 +1,14 @@
 # journalists-quotes-service
 
-Backend service that matches journalist quote requests (HARO email digests + Featured.com Premium API) against brand context and dispatches expert-quote pitches.
+Backend service that matches journalist quote requests (HARO email digests + Featured.com Premium API) against brand context and dispatches expert-quote pitches. Pure opportunity catalog + submit — pitch content is generated upstream by the DAG via `content-generation-service`.
 
 Three workflows:
 
 - **WF1 — Email inbound ingestion**: `email-gateway-service` HMAC-pushes inbound emails into `/webhooks/inbound-email`. `/internal/process-inbound-emails` (workflow-service cron) drains the bronze table, dispatches to the per-provider parser, writes silver `provider_quote_requests`, attaches to gold `quote_opportunities` via fingerprint clustering.
-- **WF2 — Ranked queue**: `POST /orgs/opportunities/ranked` merges silver email rows (shared pool) with a live Featured `listOpportunities` fetch (write-through cache to silver), scores every candidate via chat-service RAG, returns the paginated list of those above `SCORE_THRESHOLD` annotated with the latest `pitchStatus` seen for the brand. `campaignId` is optional — when present, dedup + score cache scope to that campaign; when absent, scope is brand-wide (used by the public HITL report at `/report/{orgId}/{brandId}/pr-expert-quote-opportunities`).
-- **WF3 — Submit reply**: `POST /orgs/opportunities/:id/reply` branches by provider — Featured → `FeaturedClient.submitAnswer`, email-source → `email-gateway-service /orgs/send` with the journalist's HARO reply alias. Pitch content is provided by the caller. Idempotency: brand-scoped when `campaignId` absent (any non-retryable pitch by ANY campaign of the brand returns `already_submitted`), campaign-scoped when present.
-- **WF4 — Draft pitch (HITL)**: `POST /orgs/quote-requests/:id/draft` proxies content-generation-service `POST /generate-expert-quote-pitch`. Body is either brand-only `{ brandId }` — 5 PR inputs (`spokesperson`, `expertiseTopics`, `responseStyle`, `companyContext`, `valueProposition`) are resolved via brand-service `POST /internal/brands/extract-fields` — or legacy `{ brandId, campaignId, spokesperson, expertiseTopics, responseStyle, companyContext, valueProposition, additionalContext? }`. Returns the drafted text and token usage; caller decides when to submit via WF3.
+- **WF2 — Opportunity catalog**: `POST /orgs/opportunities/next` returns the single highest-scored Gold-cluster opportunity not yet pitched for the brand-set (parity with `lead-service /orgs/buffer/next`). `POST /orgs/opportunities/ranked` returns the paginated list of all Gold opportunities above `SCORE_THRESHOLD`, annotated with the latest `pitchStatus`. Both ingest fresh Featured.com opportunities into silver + Gold cluster via fingerprint, then RAG-score via chat-service. **Brand identity flows via `x-brand-id` CSV header**, canonicalized server-side (deduplicated + sorted). All `(opportunity, brandSet)` is the keying unit.
+- **WF3 — Submit reply**: `POST /orgs/opportunities/:id/reply` — `:id` = Gold cluster id. The service picks a silver "representative" row (Featured-API preferred, else most recently fetched email) and dispatches via `FeaturedClient.submitAnswer` or `email-gateway-service /orgs/send`. Pitch content is supplied by the caller (DAG). Idempotency: exact-match on `(quote_opportunity_id, sorted brand_ids[])` — co-brand `[A,B]` is distinct from solo `[A]`.
+
+Pitch drafting is **not** in this service. The DAG calls `content-generation-service` (e.g. `POST /generate-expert-quote-pitch` or `POST /generate` with template of its choice) and forwards the result to `POST /orgs/opportunities/:id/reply`.
 
 ## Quick start
 
@@ -35,9 +36,9 @@ The server boots on `PORT` (default `3050`) and runs Drizzle migrations automati
 | `RUNS_SERVICE_URL` / `RUNS_SERVICE_API_KEY` | Run tracking |
 | `KEY_SERVICE_URL` / `KEY_SERVICE_API_KEY` | Featured creds resolution — reads two scalar platform keys (`featured-username`, `featured-password`) |
 | `BRAND_SERVICE_URL` / `BRAND_SERVICE_API_KEY` | Brand metadata + logo (Featured profile bootstrap) |
-| `CHAT_SERVICE_URL` / `CHAT_SERVICE_API_KEY` | RAG scoring (TODO: endpoint) |
-| `CONTENT_GENERATION_SERVICE_URL` / `CONTENT_GENERATION_SERVICE_API_KEY` | WF4 HITL pitch draft generation via `POST /generate-expert-quote-pitch` |
+| `CHAT_SERVICE_URL` / `CHAT_SERVICE_API_KEY` | RAG scoring (per-brand loop + mean aggregate across brand-set) |
 | `EMAIL_GATEWAY_SERVICE_URL` / `EMAIL_GATEWAY_SERVICE_API_KEY` | WF3 email_reply dispatch via `POST /orgs/send` |
+| `BILLING_SERVICE_URL` / `BILLING_SERVICE_API_KEY` | featured-api-pitch-submit credit gate |
 | `JQS_INBOUND_HMAC_SECRET` | Shared secret email-gateway uses to sign pushes into `/webhooks/inbound-email` (300s replay window, sha256) |
 | `INBOUND_ALIAS_ROUTING` | JSON array `[{alias, provider}]` mapping recipient mailbox aliases to provider keys. Unknown aliases store with `provider=null` and `/internal/process-inbound-emails` marks them `skipped`. |
 
@@ -49,52 +50,69 @@ The server boots on `PORT` (default `3050`) and runs Drizzle migrations automati
 | `GET` | `/openapi.json` | Public | OpenAPI 3 spec |
 | `POST` | `/webhooks/inbound-email` | HMAC `x-eg-signature` | Receive Postmark inbound payload pushed by email-gateway. Idempotent on `MessageID`. |
 | `POST` | `/internal/process-inbound-emails` | apiKey | Drain pending bronze emails, parse, write silver + gold cluster. |
-| `POST` | `/orgs/opportunities/ranked` | apiKey + orgId | Ranked HITL queue for `{ brandId, campaignId?, limit?, offset? }`. Returns ALL candidates above `SCORE_THRESHOLD` with `pitchStatus` field — no exclusion. |
-| `POST` | `/orgs/opportunities/:id/reply` | apiKey + orgId | Submit pitch reply for the opportunity. Body: `{ pitchContent, brandId, campaignId?, subject? }`. Idempotency: brand-scoped when `campaignId` absent, campaign-scoped when present. Block statuses: `drafted, submitted, selected, published, not_selected`. |
-| `POST` | `/orgs/quote-requests/:id/draft` | apiKey + orgId | Generate an AI-drafted pitch via content-generation-service (no submit). Body: `{ brandId }` (brand-only — fields resolved via brand-service extract-fields) OR `{ brandId, campaignId, spokesperson, expertiseTopics, responseStyle, companyContext, valueProposition, additionalContext? }` (legacy). |
-| `GET` | `/orgs/quote-requests` | apiKey + orgId | List silver rows (filter by `?provider=` / `?ingestion_channel=`). |
+| `POST` | `/orgs/opportunities/next` | apiKey + orgId + x-brand-id | Single highest-scored Gold opportunity not yet pitched for the brand-set. Body: `{ campaignId? }`. Returns `{ found: true, opportunity, brandIds }` or `{ found: false }`. |
+| `POST` | `/orgs/opportunities/ranked` | apiKey + orgId + x-brand-id | Paginated Gold opportunities above `SCORE_THRESHOLD`. Body: `{ campaignId?, limit?, offset? }`. Annotates each with `pitchStatus` for the brand-set (no exclusion). |
+| `POST` | `/orgs/opportunities/:id/reply` | apiKey + orgId + x-brand-id | Submit pitch reply. `:id` = `quote_opportunities.id` (Gold). Body: `{ pitchContent, campaignId?, subject? }`. Service picks silver representative (Featured > most recent email). Idempotency: exact-match on `(quote_opportunity_id, sorted brand_ids[])`. Block statuses: `drafted, submitted, selected, published, not_selected`. |
+| `GET` | `/orgs/quote-requests` | apiKey + orgId | List silver rows. Filters: `?provider=`, `?ingestion_channel=`, `?campaign_id=` (returns rows pitched under that campaign). |
 | `GET` | `/orgs/quote-requests/:id` | apiKey + orgId | Single silver row. |
 | `GET` | `/orgs/quote-requests/stats` | apiKey + orgId | Aggregate counts. |
 | `GET` | `/orgs/quote-pitches` | apiKey + orgId | List pitches. |
 | `GET` | `/orgs/quote-pitches/:id` | apiKey + orgId | Single pitch. |
 
-`POST /orgs/opportunities/ranked` returns:
+### Multi-brand convention
 
-- `200 { status: "ok", total, opportunities: [{ opportunityId, provider, ingestionChannel, featuredQuestionId, mediaOutlet, journalistName, opportunityText, deadline, pitchUrl, pitchEmail, category, score, whyRelevant, pitchStatus }] }`
-- `502` if Featured `listOpportunities` or key-service fails (no silent fallback)
+`x-brand-id` is a CSV header on every `/orgs/opportunities/*` route:
 
-`pitchStatus` is the latest pitch status for the `(quote_request_id, brand_id)` pair across all campaigns of the brand (or scoped to `campaignId` when provided), or `null` if never pitched.
+```
+x-brand-id: <uuid>                       # single brand
+x-brand-id: <uuid1>,<uuid2>,<uuid3>      # co-branded
+```
 
-`POST /orgs/opportunities/:id/reply` returns one of:
+Server-side: deduplicated + sorted into a canonical `brand_ids[]` array. Score cache, ranking, and pitch idempotency all key on this canonical set. Solo `[A]`, solo `[B]`, and co-brand `[A,B]` are three independent identity scopes.
+
+### `POST /orgs/opportunities/next` response
+
+```json
+{ "found": true, "opportunity": { "opportunityId": "<gold-uuid>", "provider": "featured|haro|sos|qwoted", "ingestionChannel": "api|email", "featuredQuestionId": 12345, "mediaOutlet": "...", "journalistName": "...", "opportunityText": "...", "deadline": "...", "pitchUrl": "...", "pitchEmail": "...", "category": "...", "score": 0.87, "whyRelevant": "..." }, "brandIds": ["<sorted-uuid>", "..."] }
+```
+
+or `{ "found": false }` when the buffer is exhausted for this brand-set.
+
+### `POST /orgs/opportunities/:id/reply` returns one of
 
 - `200 { status: "submitted", pitchId, deliveryMethod, outboundMessageId? | featuredQuestionId? }`
-- `200 { status: "already_submitted", pitchId, ... }` — idempotent replay
+- `200 { status: "already_submitted", pitchId, ... }` — idempotent replay on `(opportunity, brand-set)`
 - `200 { status: "rate_limited", retryAfter }` — Featured rate limit
 - `200 { status: "error", pitchId, error }` — Featured submitAnswer rejected (pitch row persisted with `status='error'`)
-- `502 { status: "error", pitchId?, error }` — upstream `email-gateway-service` or Featured/key-service unavailable
+- `402 { error, balance_cents, required_cents }` — insufficient credit (platform-key Featured pitch only)
+- `502 { status: "error", pitchId?, error }` — upstream `email-gateway-service` / Featured / key-service unavailable
 
 ## Data layering
 
 | Layer | Table | Owner |
 |-------|-------|-------|
 | Bronze | `inbound_emails` | WF1 ingestion (raw Postmark payload, dedup on `message_id`) |
-| Silver | `provider_quote_requests` | WF1 (from email parsers) + WF2 (Featured live-fetch write-through). Unique on `(provider, ingestion_channel, external_id)`. Email rows use the sentinel `SHARED_EMAIL_ORG_ID` org_id; Featured rows are per-org. |
-| Gold | `quote_opportunities` | WF1 fingerprint clustering. Unique on `fingerprint`. |
-| Pitch | `quote_pitches` | WF3. `delivery_method` ∈ `{featured_api, email_reply}`. `campaign_id` nullable (forensic). Two partial uniques: `(quote_opportunity_id, brand_id)` when clustered, `(quote_request_id, brand_id)` when non-clustered — both filter retryable statuses (`error, length_violation, template_missing, brand_missing_fields, insufficient_credits`). |
-| Score cache | `quote_priorities` | WF2 RAG score persistence. PK `(quote_request_id, brand_id)`. `campaign_id` nullable. |
+| Silver | `provider_quote_requests` | WF1 (from email parsers) + WF2 (Featured live-fetch write-through). Unique on `(provider, ingestion_channel, external_id)`. Email rows use the sentinel `SHARED_EMAIL_ORG_ID` org_id; Featured rows are per-org. Every silver row is clustered into Gold at insert time via fingerprint. |
+| Gold | `quote_opportunities` | WF1 + WF2 fingerprint clustering. Unique on `fingerprint`. Externalized as `opportunityId` on every API response. |
+| Pitch | `quote_pitches` | WF3. `brand_ids uuid[]` plural canonical-sorted. `delivery_method` ∈ `{featured_api, email_reply}`. `campaign_id` nullable (forensic). Partial unique `(quote_opportunity_id, brand_ids)` filters retryable statuses (`error, length_violation, template_missing, brand_missing_fields, insufficient_credits`). |
+| Score cache | `quote_priorities` | WF2 RAG score persistence. PK `(quote_opportunity_id, brand_ids)`. `campaign_id` nullable. One score per `(Gold opportunity, brand-set)`. |
 
 ## Featured.com integration
 
 - Auth: `POST /login` → JWT in JSON body field `"x-access-token"`. Cached for 24 h, refreshed on 401.
 - All other calls use `x-access-token: <JWT>` header.
 - Submit rate limit: token-bucket, 100 / sliding hour. WF3 returns `status="rate_limited"` with `retryAfter` seconds when exhausted.
-- Answer length must be 100–2500 chars (FeaturedClient.submitAnswer throws if out of bounds — caller responsibility).
-- `createProfile` (lazy, inside WF3 Featured path) uses multipart/form-data with brand logo bytes fetched from `brand.logoUrl` returned by brand-service `GET /internal/brands/{id}` (deterministic logo.dev URL, lazy-filled).
+- Answer length must be 100–2500 chars (`FeaturedClient.submitAnswer` throws if out of bounds — caller responsibility).
+- `createProfile` (lazy, inside WF3 Featured path) uses multipart/form-data with brand logo bytes fetched from `brand.logoUrl` returned by brand-service `GET /internal/brands/{id}` (deterministic logo.dev URL, lazy-filled). **Co-brand pitch**: profile is created/looked up against the first brand in the canonical brand-set (lead spokesperson identity).
 
 ## Email-gateway integration
 
 - WF1 inbound: `email-gateway-service` posts Postmark inbound payloads to `/webhooks/inbound-email` with `x-eg-signature: t=<unix_seconds>,v1=<hex sha256(t+"."+body, JQS_INBOUND_HMAC_SECRET)>`. 300s replay window.
-- WF3 outbound: this service calls `email-gateway-service POST /orgs/send` (transactional type) for email_reply pitches. For HARO, the journalist's anonymized reply alias (`reply+<uuid>@helpareporter.com`) routes responses back automatically — RFC2822 `In-Reply-To` headers are not required.
+- WF3 outbound: this service calls `email-gateway-service POST /orgs/send` (transactional type) for `email_reply` pitches. For HARO, the journalist's anonymized reply alias (`reply+<uuid>@helpareporter.com`) routes responses back automatically — RFC2822 `In-Reply-To` headers are not required.
+
+## RAG scoring (chat-service)
+
+Per-brand loop + mean aggregate: `chat-service /orgs/rag/score` is single-brand; this service calls it once per brand in the canonical set, then averages per-document scores. One `quote_priorities` row is persisted per `(opportunity, brand-set)`. Native multi-brand `rag/score` is a chat-service follow-up.
 
 ## Run tracking
 
@@ -106,19 +124,11 @@ Every `/orgs/*` request creates its own child run via `runs-service`:
 - On response finish, middleware closes the run (`completed` if status < 400, `failed` otherwise).
 - If `runs-service` is unavailable, the request fails with `502` — never silently continues.
 
-## Stub fallbacks
-
-These mark integration points blocked on parallel tasks:
-
-- `chat-client.ragScore`: TODO(rag-endpoint) — falls back to recency-based scoring when chat-service `/orgs/rag/score` returns 404 or is unset.
-
-Remove each fallback once the corresponding upstream lands.
-
 ## Out of scope
 
+- **Pitch content generation** — DAG calls `content-generation-service` directly with the template of its choice and forwards the result to `POST /orgs/opportunities/:id/reply`.
 - Outcome tracking (`selected` / `published` / `not_selected` reconciliation, journalist reply classification, bounce handling) — handled by `replies-service` and shared outreach-tracking infra.
-- Pitch content generation — handled by workflow-service via content-generation-service before calling `/orgs/opportunities/:id/reply`.
-- Email-gateway-service inbound infrastructure (Postmark webhook receiver, outbox, fan-out worker) — separate repo `email-gateway-service-v1`.
+- Email-gateway-service inbound infrastructure (Postmark webhook receiver, outbox, fan-out worker) — separate repo.
 - workflow-service DAG configuration — operator-managed.
 - Postmark MX / DNS setup — operator-managed.
 
@@ -126,8 +136,8 @@ Remove each fallback once the corresponding upstream lands.
 
 ```bash
 pnpm test            # all
-pnpm test:unit       # parsers, fingerprint, featured-client, alias-routing
-pnpm test:integration # routes + flow
+pnpm test:unit       # parsers, fingerprint, featured-client, alias-routing, brand-ids canon
+pnpm test:integration # routes + flow + schema migration
 ```
 
 Integration tests require a local Postgres at `JOURNALISTS_QUOTES_SERVICE_DATABASE_URL` with the `drizzle/` migrations applied. CI provides this automatically.

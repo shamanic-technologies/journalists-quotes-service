@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { rankCandidates } from "../../src/lib/opportunity-pipeline.js";
+import {
+  rankOpportunities,
+  pickRepresentativeSilver,
+} from "../../src/lib/opportunity-pipeline.js";
 import { ragScore } from "../../src/lib/chat-client.js";
 
 const { mockInsert, mockValues, mockOnConflict } = vi.hoisted(() => {
@@ -27,7 +30,8 @@ const defaultRagScoreImpl = async (req: {
   })),
 });
 
-const baseCandidate = {
+const baseOpportunity = {
+  representativeSilverId: "00000000-0000-0000-0000-000000000999",
   provider: "featured",
   ingestionChannel: "api",
   featuredQuestionId: null,
@@ -37,6 +41,7 @@ const baseCandidate = {
   pitchUrl: null,
   pitchEmail: null,
   category: null,
+  pitchStatus: null,
 };
 
 beforeEach(() => {
@@ -47,12 +52,12 @@ beforeEach(() => {
   mockOnConflict.mockClear();
 });
 
-describe("rankCandidates", () => {
+describe("rankOpportunities", () => {
   it("returns empty when given no candidates", async () => {
-    const out = await rankCandidates({
+    const out = await rankOpportunities({
       candidates: [],
       orgId: "org-1",
-      brandId: "brand-1",
+      brandIds: ["brand-1"],
       campaignId: "camp-1",
       scoreThreshold: 0.5,
     });
@@ -61,37 +66,39 @@ describe("rankCandidates", () => {
     expect(mockInsert).not.toHaveBeenCalled();
   });
 
-  it("ranks candidates by score desc and filters below threshold", async () => {
+  it("ranks opportunities by score desc and filters below threshold", async () => {
     const candidates = [
-      { ...baseCandidate, id: "a", opportunityText: "A" },
-      { ...baseCandidate, id: "b", opportunityText: "B" },
-      { ...baseCandidate, id: "c", opportunityText: "C" },
-      { ...baseCandidate, id: "d", opportunityText: "D" },
+      { ...baseOpportunity, opportunityId: "a", opportunityText: "A" },
+      { ...baseOpportunity, opportunityId: "b", opportunityText: "B" },
+      { ...baseOpportunity, opportunityId: "c", opportunityText: "C" },
+      { ...baseOpportunity, opportunityId: "d", opportunityText: "D" },
     ];
-    const out = await rankCandidates({
+    const out = await rankOpportunities({
       candidates,
       orgId: "org-1",
-      brandId: "brand-1",
+      brandIds: ["brand-1"],
       campaignId: "camp-1",
       scoreThreshold: 0.5,
     });
-    expect(out.map((c) => c.id)).toEqual(["a", "b", "c"]);
+    expect(out.map((c) => c.opportunityId)).toEqual(["a", "b", "c"]);
     expect(out[0].score).toBeCloseTo(1.0);
     expect(out[0].whyRelevant).toBe("score-0");
     expect(out[2].score).toBeCloseTo(0.6);
   });
 
   it("attaches score and whyRelevant onto every returned row above threshold", async () => {
-    const out = await rankCandidates({
-      candidates: [{ ...baseCandidate, id: "x", opportunityText: "X" }],
+    const out = await rankOpportunities({
+      candidates: [
+        { ...baseOpportunity, opportunityId: "x", opportunityText: "X" },
+      ],
       orgId: "org-1",
-      brandId: "brand-1",
+      brandIds: ["brand-1"],
       campaignId: "camp-1",
       scoreThreshold: 0,
     });
     expect(out).toHaveLength(1);
     expect(out[0]).toMatchObject({
-      id: "x",
+      opportunityId: "x",
       score: 1,
       whyRelevant: "score-0",
     });
@@ -109,15 +116,15 @@ describe("rankCandidates", () => {
     );
 
     const candidates = Array.from({ length: 250 }, (_, i) => ({
-      ...baseCandidate,
-      id: `c-${i}`,
+      ...baseOpportunity,
+      opportunityId: `c-${i}`,
       opportunityText: `text-${i}`,
     }));
 
-    const out = await rankCandidates({
+    const out = await rankOpportunities({
       candidates,
       orgId: "org-1",
-      brandId: "brand-1",
+      brandIds: ["brand-1"],
       campaignId: "camp-1",
       scoreThreshold: 0,
     });
@@ -157,21 +164,124 @@ describe("rankCandidates", () => {
     );
 
     const candidates = Array.from({ length: 150 }, (_, i) => ({
-      ...baseCandidate,
-      id: `c-${i}`,
+      ...baseOpportunity,
+      opportunityId: `c-${i}`,
       opportunityText: `text-${i}`,
     }));
 
     await expect(
-      rankCandidates({
+      rankOpportunities({
         candidates,
         orgId: "org-1",
-        brandId: "brand-1",
+        brandIds: ["brand-1"],
         campaignId: "camp-1",
         scoreThreshold: 0,
       })
     ).rejects.toThrow("chat-service");
 
     expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("passes brandIds[] plural to ragScore (multi-brand)", async () => {
+    let captured: unknown;
+    vi.mocked(ragScore).mockImplementation(
+      (async (req: unknown) => {
+        captured = req;
+        return { results: [] };
+      }) as never
+    );
+    await rankOpportunities({
+      candidates: [
+        { ...baseOpportunity, opportunityId: "x", opportunityText: "X" },
+      ],
+      orgId: "org-1",
+      brandIds: ["brand-1", "brand-2"],
+      scoreThreshold: 0,
+    });
+    expect(captured).toMatchObject({ brandIds: ["brand-1", "brand-2"] });
+  });
+});
+
+describe("pickRepresentativeSilver", () => {
+  const baseRow = {
+    mediaOutlet: null,
+    journalistName: null,
+    opportunityText: "x",
+    deadline: null,
+    pitchUrl: null,
+    pitchEmail: null,
+    category: null,
+    quoteOpportunityId: "g-1",
+    isCanonical: false,
+  };
+
+  it("prefers Featured silver over email silver", () => {
+    const rows = [
+      {
+        ...baseRow,
+        id: "email-1",
+        provider: "haro",
+        ingestionChannel: "email",
+        featuredQuestionId: null,
+        fetchedAt: new Date("2026-01-02"),
+      },
+      {
+        ...baseRow,
+        id: "featured-1",
+        provider: "featured",
+        ingestionChannel: "api",
+        featuredQuestionId: 42,
+        fetchedAt: new Date("2026-01-01"),
+      },
+    ];
+    expect(pickRepresentativeSilver(rows).id).toBe("featured-1");
+  });
+
+  it("picks most recently fetched featured row when multiple featured silvers exist", () => {
+    const rows = [
+      {
+        ...baseRow,
+        id: "featured-older",
+        provider: "featured",
+        ingestionChannel: "api",
+        featuredQuestionId: 10,
+        fetchedAt: new Date("2026-01-01"),
+      },
+      {
+        ...baseRow,
+        id: "featured-newer",
+        provider: "featured",
+        ingestionChannel: "api",
+        featuredQuestionId: 20,
+        fetchedAt: new Date("2026-01-05"),
+      },
+    ];
+    expect(pickRepresentativeSilver(rows).id).toBe("featured-newer");
+  });
+
+  it("falls back to most recently fetched email row when no featured silver", () => {
+    const rows = [
+      {
+        ...baseRow,
+        id: "email-older",
+        provider: "haro",
+        ingestionChannel: "email",
+        featuredQuestionId: null,
+        fetchedAt: new Date("2026-01-01"),
+      },
+      {
+        ...baseRow,
+        id: "email-newer",
+        provider: "haro",
+        ingestionChannel: "email",
+        featuredQuestionId: null,
+        fetchedAt: new Date("2026-01-05"),
+      },
+    ];
+    expect(pickRepresentativeSilver(rows).id).toBe("email-newer");
+  });
+
+  it("throws when no rows are given", () => {
+    expect(() => pickRepresentativeSilver([])).toThrow();
   });
 });
