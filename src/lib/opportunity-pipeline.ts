@@ -179,6 +179,17 @@ export async function fetchEligibleCandidates(args: {
     .map(({ existingPitchStatus: _unused, ...rest }) => rest);
 }
 
+// chat-service POST /orgs/rag/score caps `documents` at 100 per request.
+const RAG_SCORE_BATCH_SIZE = 100;
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    out.push(arr.slice(i, i + size));
+  }
+  return out;
+}
+
 export async function rankCandidates(args: {
   candidates: EligibleCandidate[];
   orgId: string;
@@ -200,21 +211,27 @@ export async function rankCandidates(args: {
 
   if (candidates.length === 0) return [];
 
-  const scoreResp = await ragScore(
-    {
-      documents: candidates.map((c) => ({ id: c.id, text: c.opportunityText })),
-      brandId,
-    },
-    orgId,
-    userId,
-    runId
+  const batches = chunk(candidates, RAG_SCORE_BATCH_SIZE);
+  const batchResponses = await Promise.all(
+    batches.map((batch) =>
+      ragScore(
+        {
+          documents: batch.map((c) => ({ id: c.id, text: c.opportunityText })),
+          brandId,
+        },
+        orgId,
+        userId,
+        runId
+      )
+    )
   );
+  const mergedResults = batchResponses.flatMap((r) => r.results);
 
-  if (scoreResp.results.length > 0) {
+  if (mergedResults.length > 0) {
     await db
       .insert(quotePriorities)
       .values(
-        scoreResp.results.map((r) => ({
+        mergedResults.map((r) => ({
           quoteRequestId: r.id,
           campaignId,
           brandId,
@@ -236,9 +253,11 @@ export async function rankCandidates(args: {
       });
   }
 
+  const resultById = new Map(mergedResults.map((r) => [r.id, r]));
+
   return candidates
     .map((c) => {
-      const result = scoreResp.results.find((r) => r.id === c.id);
+      const result = resultById.get(c.id);
       return {
         ...c,
         score: result?.score ?? 0,
