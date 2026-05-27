@@ -12,9 +12,9 @@ import { computeFingerprint } from "../cluster/fingerprint.js";
 /**
  * Sentinel org_id for email-sourced opportunities. The same HARO query is
  * visible to every org, so silver rows live in a shared pool keyed by this
- * UUID. WF2 (`/orgs/opportunities/next`) queries `WHERE org_id IN (req.orgId,
- * SHARED_EMAIL_ORG_ID)` to merge the org's API-sourced rows with the shared
- * email pool.
+ * UUID. The ranked-queue pipeline (`/orgs/opportunities/ranked`) queries
+ * `WHERE org_id IN (req.orgId, SHARED_EMAIL_ORG_ID)` to merge the org's
+ * API-sourced rows with the shared email pool.
  */
 export const SHARED_EMAIL_ORG_ID = "00000000-0000-0000-0000-000000000000";
 

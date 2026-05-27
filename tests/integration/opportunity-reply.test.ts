@@ -13,6 +13,7 @@ import {
   AUTH_HEADERS,
   TEST_BRAND,
   TEST_CAMPAIGN_A,
+  TEST_CAMPAIGN_B,
   TEST_ORG_A,
 } from "../helpers/test-app.js";
 import { cleanTestData, closeDb } from "../helpers/test-db.js";
@@ -72,6 +73,26 @@ vi.mock("../../src/lib/brand-client.js", () => ({
     createdAt: "2024-01-01T00:00:00Z",
     updatedAt: "2024-01-01T00:00:00Z",
   })),
+  extractFields: vi.fn(async () => ({
+    brands: [
+      {
+        brandId: "00000000-0000-0000-0000-0000000000cc",
+        domain: "test-brand.com",
+        name: "Test Brand",
+        brandUrl: "https://test-brand.com",
+      },
+    ],
+    fields: {},
+  })),
+  BrandServiceError: class extends Error {
+    status: number;
+    body: string;
+    constructor(status: number, message: string, body: string) {
+      super(message);
+      this.status = status;
+      this.body = body;
+    }
+  },
 }));
 
 // Stub fetch for email-gateway-client `sendTransactionalEmail` calls.
@@ -369,6 +390,123 @@ describe("POST /orgs/opportunities/:id/reply", () => {
     expect(res.status).toBe(200);
     expect(res.body.deliveryMethod).toBe("email_reply");
     expect(authorized).not.toHaveBeenCalled();
+  });
+
+  it("brand-only body (no campaignId) submits via featured_api branch and persists pitch with campaign_id NULL", async () => {
+    const silver = await seedFeaturedSilver(5151);
+    const pitchContent = "B".repeat(220);
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({
+        pitchContent,
+        brandId: TEST_BRAND,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("submitted");
+    expect(res.body.deliveryMethod).toBe("featured_api");
+
+    const pitches = await db
+      .select()
+      .from(quotePitches)
+      .where(eq(quotePitches.id, res.body.pitchId));
+    expect(pitches[0].campaignId).toBeNull();
+    expect(pitches[0].brandId).toBe(TEST_BRAND);
+  });
+
+  it("brand-only body submits via email_reply branch and persists pitch with campaign_id NULL", async () => {
+    const silver = await seedHaroSilver("uuid-haro-brandonly");
+    const pitchContent = "Pitching the brand-only way. " + "P".repeat(120);
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({ pitchContent, brandId: TEST_BRAND });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("submitted");
+    expect(res.body.deliveryMethod).toBe("email_reply");
+
+    const pitches = await db.select().from(quotePitches);
+    expect(pitches).toHaveLength(1);
+    expect(pitches[0].campaignId).toBeNull();
+  });
+
+  it("brand-only call returns already_submitted when a prior pitch by ANOTHER campaign of the brand is non-retryable", async () => {
+    const silver = await seedHaroSilver("uuid-haro-cross-campaign");
+
+    // Prior pitch under CAMPAIGN_A, status submitted (blocking).
+    await db.insert(quotePitches).values({
+      quoteRequestId: silver.id,
+      campaignId: TEST_CAMPAIGN_A,
+      brandId: TEST_BRAND,
+      draft: "earlier pitch",
+      status: "submitted",
+      deliveryMethod: "email_reply",
+      orgId: TEST_ORG_A,
+    });
+
+    // Brand-only call (no campaignId) must surface already_submitted.
+    const res = await request(app())
+      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({ pitchContent: "y".repeat(200), brandId: TEST_BRAND });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("already_submitted");
+  });
+
+  it("campaign-scoped call returns already_submitted when ANY campaign of the brand already pitched (brand-canonical dedup)", async () => {
+    const silver = await seedHaroSilver("uuid-haro-isolated");
+
+    await db.insert(quotePitches).values({
+      quoteRequestId: silver.id,
+      campaignId: TEST_CAMPAIGN_A,
+      brandId: TEST_BRAND,
+      draft: "earlier pitch",
+      status: "submitted",
+      deliveryMethod: "email_reply",
+      orgId: TEST_ORG_A,
+    });
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({
+        pitchContent: "y".repeat(200),
+        brandId: TEST_BRAND,
+        campaignId: TEST_CAMPAIGN_B,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("already_submitted");
+  });
+
+  it("retryable status (length_violation) does NOT block a new pitch", async () => {
+    const silver = await seedHaroSilver("uuid-haro-retryable");
+
+    await db.insert(quotePitches).values({
+      quoteRequestId: silver.id,
+      campaignId: TEST_CAMPAIGN_A,
+      brandId: TEST_BRAND,
+      status: "length_violation",
+      deliveryMethod: "email_reply",
+      orgId: TEST_ORG_A,
+    });
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${silver.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({
+        pitchContent: "z".repeat(200),
+        brandId: TEST_BRAND,
+        campaignId: TEST_CAMPAIGN_A,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("submitted");
   });
 
   it("returns 502 + error pitch row when email-gateway fails", async () => {

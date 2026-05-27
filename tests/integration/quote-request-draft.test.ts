@@ -24,11 +24,49 @@ import {
   type GenerateExpertQuotePitchRequest,
   type ContentGenerationCallerIdentity,
 } from "../../src/lib/content-generation-client.js";
+import {
+  BrandServiceError,
+  type ExtractFieldsResponse,
+} from "../../src/lib/brand-client.js";
 import { SHARED_EMAIL_ORG_ID } from "../../src/lib/inbound/process.js";
 
 interface CapturedCall {
   request: GenerateExpertQuotePitchRequest;
   identity: ContentGenerationCallerIdentity;
+}
+
+interface CapturedExtract {
+  brandIds: string[];
+  fields: { key: string; description: string }[];
+}
+
+function brandFieldsResponse(values: Record<string, string>): ExtractFieldsResponse {
+  const fields: ExtractFieldsResponse["fields"] = {};
+  for (const [k, v] of Object.entries(values)) {
+    fields[k] = {
+      value: v,
+      byBrand: {
+        "test-brand.com": {
+          value: v,
+          cached: true,
+          extractedAt: "2026-05-27T00:00:00.000Z",
+          expiresAt: null,
+          sourceUrls: null,
+        },
+      },
+    };
+  }
+  return {
+    brands: [
+      {
+        brandId: "00000000-0000-0000-0000-0000000000cc",
+        domain: "test-brand.com",
+        name: "Test Brand",
+        brandUrl: "https://test-brand.com",
+      },
+    ],
+    fields,
+  };
 }
 
 describe("POST /orgs/quote-requests/:id/draft", () => {
@@ -59,6 +97,9 @@ describe("POST /orgs/quote-requests/:id/draft", () => {
       attempts: number;
     };
     captured?: CapturedCall[];
+    extractFieldsResponse?: ExtractFieldsResponse;
+    extractFieldsError?: Error;
+    capturedExtract?: CapturedExtract[];
   }) {
     return createTestApp({
       quoteRequestDraftDeps: {
@@ -69,6 +110,12 @@ describe("POST /orgs/quote-requests/:id/draft", () => {
           }
           if (stub.success) return stub.success;
           throw new Error("no stub configured");
+        },
+        extractFields: async (args) => {
+          stub.capturedExtract?.push(args);
+          if (stub.extractFieldsError) throw stub.extractFieldsError;
+          if (stub.extractFieldsResponse) return stub.extractFieldsResponse;
+          throw new Error("no extractFields stub configured");
         },
       },
     });
@@ -263,6 +310,134 @@ describe("POST /orgs/quote-requests/:id/draft", () => {
       maxChars: 2500,
       attempts: 2,
     });
+  });
+
+  it("brand-only body { brandId } resolves PR fields via brand-service extract-fields and forwards them as generation inputs", async () => {
+    const row = await seedRow();
+    const captured: CapturedCall[] = [];
+    const capturedExtract: CapturedExtract[] = [];
+
+    const res = await request(
+      appWithStub({
+        captured,
+        capturedExtract,
+        success: {
+          pitch: "y".repeat(400),
+          charCount: 400,
+          attempts: 1,
+          tokensInput: 20,
+          tokensOutput: 150,
+        },
+        extractFieldsResponse: brandFieldsResponse({
+          spokesperson: "Brand Spokes, Founder",
+          expertiseTopics: "remote-work, productivity",
+          responseStyle: "concise, data-led",
+          companyContext: "TestBrand — founded 2024, 100 customers",
+          valueProposition: "first telemetry-grade remote-work coach",
+        }),
+      })
+    )
+      .post(`/orgs/quote-requests/${row.id}/draft`)
+      .set(AUTH_HEADERS)
+      .send({ brandId: TEST_BRAND });
+
+    expect(res.status).toBe(200);
+    expect(res.body.pitch).toBe("y".repeat(400));
+
+    expect(capturedExtract).toHaveLength(1);
+    expect(capturedExtract[0].brandIds).toEqual([TEST_BRAND]);
+    const keysSent = capturedExtract[0].fields.map((f) => f.key).sort();
+    expect(keysSent).toEqual([
+      "companyContext",
+      "expertiseTopics",
+      "responseStyle",
+      "spokesperson",
+      "valueProposition",
+    ]);
+    for (const f of capturedExtract[0].fields) {
+      expect(f.description.length).toBeGreaterThan(10);
+    }
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0].request.variables).toMatchObject({
+      brands: [
+        {
+          name: "Brand Spokes, Founder",
+          industry: "TestBrand — founded 2024, 100 customers",
+          expertise: "remote-work, productivity",
+          voice: "concise, data-led",
+          targetAudience: "first telemetry-grade remote-work coach",
+        },
+      ],
+    });
+    expect(captured[0].request.campaignId).toBeUndefined();
+    expect(captured[0].identity.campaignId).toBeUndefined();
+  });
+
+  it("brand-only body: 502 when brand-service returns a non-2xx response", async () => {
+    const row = await seedRow();
+
+    const res = await request(
+      appWithStub({
+        extractFieldsError: new BrandServiceError(
+          500,
+          "brand-service POST /internal/brands/extract-fields failed (500): boom",
+          "boom"
+        ),
+      })
+    )
+      .post(`/orgs/quote-requests/${row.id}/draft`)
+      .set(AUTH_HEADERS)
+      .send({ brandId: TEST_BRAND });
+
+    expect(res.status).toBe(502);
+    expect(res.body.error).toMatch(/extract-fields/);
+  });
+
+  it("brand-only body: 502 when brand-service returns an empty value for a required field", async () => {
+    const row = await seedRow();
+
+    const res = await request(
+      appWithStub({
+        extractFieldsResponse: brandFieldsResponse({
+          // spokesperson omitted intentionally to trigger fail-loud
+          expertiseTopics: "topics",
+          responseStyle: "style",
+          companyContext: "context",
+          valueProposition: "value",
+        }),
+      })
+    )
+      .post(`/orgs/quote-requests/${row.id}/draft`)
+      .set(AUTH_HEADERS)
+      .send({ brandId: TEST_BRAND });
+
+    expect(res.status).toBe(502);
+    expect(res.body.error).toMatch(/spokesperson/);
+  });
+
+  it("400s a mixed body (campaignId provided without all featureInputs)", async () => {
+    const row = await seedRow();
+    const res = await request(
+      appWithStub({
+        success: {
+          pitch: "x".repeat(200),
+          charCount: 200,
+          attempts: 1,
+          tokensInput: 1,
+          tokensOutput: 1,
+        },
+      })
+    )
+      .post(`/orgs/quote-requests/${row.id}/draft`)
+      .set(AUTH_HEADERS)
+      .send({
+        brandId: TEST_BRAND,
+        campaignId: TEST_CAMPAIGN_A,
+        // missing the other 4 fields
+        spokesperson: "x",
+      });
+    expect(res.status).toBe(400);
   });
 
   it("accepts rows from the shared email pool (SHARED_EMAIL_ORG_ID)", async () => {
