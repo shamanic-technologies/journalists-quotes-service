@@ -19,23 +19,7 @@
       }
     },
     "schemas": {
-      "PitchStatus": {
-        "type": "string",
-        "nullable": true,
-        "enum": [
-          "drafted",
-          "submitted",
-          "selected",
-          "published",
-          "not_selected",
-          "error",
-          "length_violation",
-          "template_missing",
-          "brand_missing_fields",
-          "insufficient_credits"
-        ]
-      },
-      "RankedOpportunity": {
+      "FullQuoteOpportunity": {
         "type": "object",
         "properties": {
           "opportunityId": {
@@ -85,9 +69,6 @@
           "whyRelevant": {
             "type": "string",
             "nullable": true
-          },
-          "pitchStatus": {
-            "$ref": "#/components/schemas/PitchStatus"
           }
         },
         "required": [
@@ -103,8 +84,105 @@
           "pitchEmail",
           "category",
           "score",
-          "whyRelevant",
-          "pitchStatus"
+          "whyRelevant"
+        ]
+      },
+      "OpportunityNextResponse": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "found": {
+                "type": "boolean",
+                "enum": [
+                  false
+                ]
+              }
+            },
+            "required": [
+              "found"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "found": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ]
+              },
+              "opportunity": {
+                "$ref": "#/components/schemas/FullQuoteOpportunity"
+              },
+              "brandIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "required": [
+              "found",
+              "opportunity",
+              "brandIds"
+            ]
+          }
+        ]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "OpportunityNextRequest": {
+        "type": "object",
+        "properties": {
+          "campaignId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "PitchStatus": {
+        "type": "string",
+        "nullable": true,
+        "enum": [
+          "drafted",
+          "submitted",
+          "selected",
+          "published",
+          "not_selected",
+          "error",
+          "length_violation",
+          "template_missing",
+          "brand_missing_fields",
+          "insufficient_credits"
+        ]
+      },
+      "RankedOpportunity": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/FullQuoteOpportunity"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "pitchStatus": {
+                "$ref": "#/components/schemas/PitchStatus"
+              }
+            },
+            "required": [
+              "pitchStatus"
+            ]
+          }
         ]
       },
       "OpportunityRankedResponse": {
@@ -124,32 +202,25 @@
           },
           "total": {
             "type": "integer"
+          },
+          "brandIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
           }
         },
         "required": [
           "status",
           "opportunities",
-          "total"
-        ]
-      },
-      "ErrorResponse": {
-        "type": "object",
-        "properties": {
-          "error": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "error"
+          "total",
+          "brandIds"
         ]
       },
       "OpportunityRankedRequest": {
         "type": "object",
         "properties": {
-          "brandId": {
-            "type": "string",
-            "format": "uuid"
-          },
           "campaignId": {
             "type": "string",
             "format": "uuid"
@@ -163,103 +234,7 @@
             "type": "integer",
             "minimum": 0
           }
-        },
-        "required": [
-          "brandId"
-        ]
-      },
-      "QuoteRequestDraftResponse": {
-        "type": "object",
-        "properties": {
-          "pitch": {
-            "type": "string"
-          },
-          "charCount": {
-            "type": "integer"
-          },
-          "attempts": {
-            "type": "integer"
-          },
-          "tokensInput": {
-            "type": "number"
-          },
-          "tokensOutput": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "pitch",
-          "charCount",
-          "attempts",
-          "tokensInput",
-          "tokensOutput"
-        ]
-      },
-      "ExpertQuotePitchLengthErrorResponse": {
-        "type": "object",
-        "properties": {
-          "error": {
-            "type": "string"
-          },
-          "charCount": {
-            "type": "integer"
-          },
-          "minChars": {
-            "type": "integer"
-          },
-          "maxChars": {
-            "type": "integer"
-          },
-          "attempts": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "error",
-          "charCount",
-          "minChars",
-          "maxChars",
-          "attempts"
-        ]
-      },
-      "QuoteRequestDraftRequest": {
-        "type": "object",
-        "properties": {
-          "brandId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "campaignId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "spokesperson": {
-            "type": "string",
-            "minLength": 1
-          },
-          "expertiseTopics": {
-            "type": "string",
-            "minLength": 1
-          },
-          "responseStyle": {
-            "type": "string",
-            "minLength": 1
-          },
-          "companyContext": {
-            "type": "string",
-            "minLength": 1
-          },
-          "valueProposition": {
-            "type": "string",
-            "minLength": 1
-          },
-          "additionalContext": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "brandId"
-        ]
+        }
       },
       "OpportunityReplyResponse": {
         "type": "object",
@@ -310,10 +285,6 @@
             "type": "string",
             "minLength": 1
           },
-          "brandId": {
-            "type": "string",
-            "format": "uuid"
-          },
           "campaignId": {
             "type": "string",
             "format": "uuid"
@@ -323,8 +294,7 @@
           }
         },
         "required": [
-          "pitchContent",
-          "brandId"
+          "pitchContent"
         ]
       },
       "ProcessInboundEmailsResponse": {
@@ -505,11 +475,15 @@
           },
           "campaignId": {
             "type": "string",
+            "nullable": true,
             "format": "uuid"
           },
-          "brandId": {
-            "type": "string",
-            "format": "uuid"
+          "brandIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
           },
           "draft": {
             "type": "string",
@@ -609,7 +583,7 @@
           "featuredQuestionId",
           "featuredProfileId",
           "campaignId",
-          "brandId",
+          "brandIds",
           "draft",
           "pitchCharCount",
           "pitchAttempts",
@@ -758,9 +732,9 @@
         }
       }
     },
-    "/orgs/opportunities/ranked": {
+    "/orgs/opportunities/next": {
       "post": {
-        "summary": "Return the top-N ranked opportunities for the brand (campaignId optional). RAG-scored, paginated, annotated with the latest pitchStatus seen for the brand. Used by the HITL public report queue (brand-scoped) and the in-dashboard HITL view (campaign-scoped).",
+        "summary": "Return the single highest-scored Gold-cluster opportunity not yet pitched for the brand-set. Mirrors lead-service POST /orgs/buffer/next semantics. Brand identity flows via x-brand-id header (CSV when plural). Excludes opportunities with a non-retryable pitch (drafted/submitted/selected/published/not_selected) on the exact brand-set. Returns { found: false } when nothing eligible remains.",
         "security": [
           {
             "ApiKeyAuth": []
@@ -774,6 +748,88 @@
             },
             "required": true,
             "name": "x-org-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted). All ranking, score caching, and pitch idempotency keys use the canonical brand_ids[] set."
+            },
+            "required": true,
+            "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted). All ranking, score caching, and pitch idempotency keys use the canonical brand_ids[] set.",
+            "name": "x-brand-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpportunityNextRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Next available opportunity, or { found: false }",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpportunityNextResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error (missing/invalid x-brand-id header, bad body)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream service unavailable (key-service, Featured)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/opportunities/ranked": {
+      "post": {
+        "summary": "Return paginated top-N Gold-cluster opportunities for the brand-set. Brand identity via x-brand-id header (CSV when plural). RAG-scored, paginated, annotated with the latest pitchStatus seen for the exact brand-set. Used by the HITL dashboard / public report queue. No exclusion — pitchStatus is surfaced as metadata.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-org-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted). All ranking, score caching, and pitch idempotency keys use the canonical brand_ids[] set."
+            },
+            "required": true,
+            "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted). All ranking, score caching, and pitch idempotency keys use the canonical brand_ids[] set.",
+            "name": "x-brand-id",
             "in": "header"
           }
         ],
@@ -820,9 +876,9 @@
         }
       }
     },
-    "/orgs/quote-requests/{id}/draft": {
+    "/orgs/opportunities/{id}/reply": {
       "post": {
-        "summary": "Generate an AI-drafted pitch for the given quote request via content-generation-service. Body accepts either brand-only `{ brandId }` (PR inputs resolved via brand-service extract-fields) or legacy `{ brandId, campaignId, spokesperson, expertiseTopics, responseStyle, companyContext, valueProposition, additionalContext? }`. Returns the drafted text without submitting — caller decides when/whether to submit via POST /orgs/opportunities/:id/reply.",
+        "summary": "Submit a pitch reply for the given Gold-cluster opportunity. `id` = quote_opportunities.id. Brand identity via x-brand-id header (CSV when plural). Body: `{ pitchContent, campaignId?, subject? }`. The service picks a representative silver row from the cluster (Featured-API preferred, else most recently fetched email) and dispatches via Featured submitAnswer or email-gateway /orgs/send. Idempotency: exact-match on (quote_opportunity_id, sorted brand_ids[]). Co-branded pitch [A,B] is distinct from solo [A]. Block statuses: drafted/submitted/selected/published/not_selected.",
         "security": [
           {
             "ApiKeyAuth": []
@@ -846,93 +902,15 @@
             "required": true,
             "name": "x-org-id",
             "in": "header"
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/QuoteRequestDraftRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Drafted pitch within the configured char range",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/QuoteRequestDraftResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation error or pitch length out of range after retry (passthrough from content-generation-service)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/ErrorResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ExpertQuotePitchLengthErrorResponse"
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Quote request not found for this org",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "Upstream content-generation-service unavailable",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/orgs/opportunities/{id}/reply": {
-      "post": {
-        "summary": "Submit a pitch reply for the given opportunity. Body: `{ pitchContent, brandId, campaignId?, subject? }`. Dispatches to Featured submitAnswer (provider=featured) or email-gateway-service /orgs/send (other providers, e.g. haro). Idempotency: brand-scoped when campaignId absent (any non-retryable pitch by the brand returns already_submitted); campaign-scoped when campaignId present.",
-        "security": [
-          {
-            "ApiKeyAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
           },
           {
             "schema": {
               "type": "string",
-              "format": "uuid"
+              "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted). All ranking, score caching, and pitch idempotency keys use the canonical brand_ids[] set."
             },
             "required": true,
-            "name": "x-org-id",
+            "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted). All ranking, score caching, and pitch idempotency keys use the canonical brand_ids[] set.",
+            "name": "x-brand-id",
             "in": "header"
           }
         ],
@@ -1013,7 +991,7 @@
     },
     "/orgs/quote-requests": {
       "get": {
-        "summary": "List quote requests for the org",
+        "summary": "List silver quote requests for the org",
         "security": [
           {
             "ApiKeyAuth": []

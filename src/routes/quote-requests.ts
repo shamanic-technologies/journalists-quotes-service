@@ -1,11 +1,7 @@
 import { Router } from "express";
 import { and, desc, eq, sql as drizzleSql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import {
-  providerQuoteRequests,
-  quotePitches,
-  quotePriorities,
-} from "../db/schema.js";
+import { providerQuoteRequests, quotePitches } from "../db/schema.js";
 import { QuoteRequestListQuerySchema } from "../schemas.js";
 
 const router = Router();
@@ -64,13 +60,14 @@ router.get("/orgs/quote-requests", async (req, res) => {
     );
 
   if (campaign_id) {
-    conditions.push(eq(quotePriorities.campaignId, campaign_id));
+    // Filter to silver rows that have been pitched under the given campaign.
+    conditions.push(eq(quotePitches.campaignId, campaign_id));
     const rows = await db
-      .select({ row: providerQuoteRequests })
+      .selectDistinct({ row: providerQuoteRequests })
       .from(providerQuoteRequests)
       .innerJoin(
-        quotePriorities,
-        eq(quotePriorities.quoteRequestId, providerQuoteRequests.id)
+        quotePitches,
+        eq(quotePitches.quoteRequestId, providerQuoteRequests.id)
       )
       .where(and(...conditions))
       .orderBy(desc(providerQuoteRequests.fetchedAt))
