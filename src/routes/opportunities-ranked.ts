@@ -16,12 +16,14 @@ import {
 
 const SCORE_THRESHOLD = Number(process.env.SCORE_THRESHOLD ?? "0.5");
 
-const OpportunityNextRequestSchema = z.object({
+const OpportunityRankedRequestSchema = z.object({
   campaignId: z.string().uuid(),
   brandId: z.string().uuid(),
+  limit: z.number().int().min(1).max(50).optional(),
+  offset: z.number().int().min(0).optional(),
 });
 
-export interface OpportunitiesNextDeps {
+export interface OpportunitiesRankedDeps {
   buildClient?: BuildFeaturedClient;
 }
 
@@ -32,32 +34,31 @@ function defaultBuildClient(
   return new FeaturedClient({ credentials, ...overrides });
 }
 
-export function createOpportunitiesNextRouter(
-  deps: OpportunitiesNextDeps = {}
+export function createOpportunitiesRankedRouter(
+  deps: OpportunitiesRankedDeps = {}
 ): Router {
   const router = Router();
   const buildClient = deps.buildClient ?? defaultBuildClient;
 
-  router.post("/orgs/opportunities/next", async (req, res) => {
-    const parsed = OpportunityNextRequestSchema.safeParse(req.body);
+  router.post("/orgs/opportunities/ranked", async (req, res) => {
+    const parsed = OpportunityRankedRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.message });
       return;
     }
     const { campaignId, brandId } = parsed.data;
+    const limit = parsed.data.limit ?? 20;
+    const offset = parsed.data.offset ?? 0;
     const orgId = req.orgId!;
     const userId = req.userId;
     const runId = req.runId;
 
-    // Featured opportunity fetches are free and unlimited on the Premium plan,
-    // so we skip billing-service authorize and runs-service addCosts here.
-    // Only pitch submissions are billed (see opportunity-reply.ts).
     try {
       await ingestFeaturedToSilver({
         orgId,
         userId,
         runId,
-        callerPath: "/orgs/opportunities/next",
+        callerPath: "/orgs/opportunities/ranked",
         buildClient,
       });
     } catch (err) {
@@ -70,11 +71,6 @@ export function createOpportunitiesNextRouter(
     }
 
     const eligible = await fetchEligibleCandidates({ orgId, campaignId });
-    if (eligible.length === 0) {
-      res.json({ status: "no_match" });
-      return;
-    }
-
     const ranked = await rankCandidates({
       candidates: eligible,
       orgId,
@@ -85,30 +81,31 @@ export function createOpportunitiesNextRouter(
       scoreThreshold: SCORE_THRESHOLD,
     });
 
-    if (ranked.length === 0) {
-      res.json({ status: "no_match" });
-      return;
-    }
+    const total = ranked.length;
+    const page = ranked.slice(offset, offset + limit);
 
-    const top = ranked[0];
     res.json({
-      status: "match",
-      opportunityId: top.id,
-      provider: top.provider,
-      ingestionChannel: top.ingestionChannel,
-      featuredQuestionId: top.featuredQuestionId,
-      mediaOutlet: top.mediaOutlet,
-      journalistName: top.journalistName,
-      opportunityText: top.opportunityText,
-      deadline: top.deadline ? top.deadline.toISOString() : null,
-      pitchUrl: top.pitchUrl,
-      pitchEmail: top.pitchEmail,
-      score: top.score,
-      whyRelevant: top.whyRelevant,
+      status: "ok",
+      opportunities: page.map((r) => ({
+        opportunityId: r.id,
+        provider: r.provider,
+        ingestionChannel: r.ingestionChannel,
+        featuredQuestionId: r.featuredQuestionId,
+        mediaOutlet: r.mediaOutlet,
+        journalistName: r.journalistName,
+        opportunityText: r.opportunityText,
+        deadline: r.deadline ? r.deadline.toISOString() : null,
+        pitchUrl: r.pitchUrl,
+        pitchEmail: r.pitchEmail,
+        category: r.category,
+        score: r.score,
+        whyRelevant: r.whyRelevant,
+      })),
+      total,
     });
   });
 
   return router;
 }
 
-export default createOpportunitiesNextRouter();
+export default createOpportunitiesRankedRouter();
