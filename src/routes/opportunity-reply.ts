@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, eq, ne, or } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { providerQuoteRequests, quotePitches } from "../db/schema.js";
@@ -32,9 +32,18 @@ const PARAMS_SCHEMA = z.object({ id: z.string().uuid() });
 const BODY_SCHEMA = z.object({
   pitchContent: z.string().min(1),
   brandId: z.string().uuid(),
-  campaignId: z.string().uuid(),
+  campaignId: z.string().uuid().optional(),
   subject: z.string().optional(),
 });
+
+// Statuses that prevent a new pitch — already in flight or terminal.
+const BLOCK_STATUSES: Array<
+  | "drafted"
+  | "submitted"
+  | "selected"
+  | "published"
+  | "not_selected"
+> = ["drafted", "submitted", "selected", "published", "not_selected"];
 
 export interface OpportunityReplyDeps {
   buildClient?: (
@@ -107,8 +116,10 @@ export function createOpportunityReplyRouter(
       return;
     }
 
-    // Idempotency: if a non-error pitch already exists for this
-    // (quote_request_id, campaign_id), return it.
+    // Idempotency: brand-canonical, always. A pitch for (quote_request_id,
+    // brand_id) collapses across all campaigns of the brand — the DB
+    // partial unique enforces the same invariant, so any campaign-scoped
+    // check that lets a duplicate through would just trip 500 below.
     const existingPitch = (
       await db
         .select()
@@ -116,8 +127,8 @@ export function createOpportunityReplyRouter(
         .where(
           and(
             eq(quotePitches.quoteRequestId, id),
-            eq(quotePitches.campaignId, campaignId),
-            ne(quotePitches.status, "error")
+            eq(quotePitches.brandId, brandId),
+            inArray(quotePitches.status, BLOCK_STATUSES)
           )
         )
         .limit(1)
@@ -187,7 +198,7 @@ async function handleFeaturedReply(args: {
   opportunity: OpportunityRow;
   pitchContent: string;
   brandId: string;
-  campaignId: string;
+  campaignId?: string;
   orgId: string;
   userId?: string;
   runId?: string;
@@ -310,7 +321,7 @@ async function handleFeaturedReply(args: {
         quoteRequestId: opportunity.id,
         featuredQuestionId: opportunity.featuredQuestionId,
         featuredProfileId: profile.featuredProfileId,
-        campaignId,
+        campaignId: campaignId ?? null,
         brandId,
         draft: pitchContent,
         status: "error",
@@ -336,7 +347,7 @@ async function handleFeaturedReply(args: {
       quoteRequestId: opportunity.id,
       featuredQuestionId: opportunity.featuredQuestionId,
       featuredProfileId: profile.featuredProfileId,
-      campaignId,
+      campaignId: campaignId ?? null,
       brandId,
       draft: pitchContent,
       status: "submitted",
@@ -393,7 +404,7 @@ async function handleEmailReply(args: {
   pitchContent: string;
   subject?: string;
   brandId: string;
-  campaignId: string;
+  campaignId?: string;
   orgId: string;
   userId?: string;
   runId?: string;
@@ -454,7 +465,7 @@ async function handleEmailReply(args: {
         .insert(quotePitches)
         .values({
           quoteRequestId: opportunity.id,
-          campaignId,
+          campaignId: campaignId ?? null,
           brandId,
           draft: pitchContent,
           status: "error",
@@ -482,7 +493,7 @@ async function handleEmailReply(args: {
     .insert(quotePitches)
     .values({
       quoteRequestId: opportunity.id,
-      campaignId,
+      campaignId: campaignId ?? null,
       brandId,
       draft: pitchContent,
       status: "submitted",

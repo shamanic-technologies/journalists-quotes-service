@@ -11,7 +11,6 @@ import { dirname, join } from "path";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { db } from "./db/index.js";
 import healthRoutes from "./routes/health.js";
-import opportunitiesNextRoutes from "./routes/opportunities-next.js";
 import opportunitiesRankedRoutes from "./routes/opportunities-ranked.js";
 import opportunityReplyRoutes from "./routes/opportunity-reply.js";
 import quoteRequestsRoutes from "./routes/quote-requests.js";
@@ -70,7 +69,6 @@ app.use(processInboundEmailsRoutes);
 
 // /orgs/* routes (api key + org id + run tracking)
 app.use("/orgs", apiKeyAuth, requireOrgId, withRunTracking);
-app.use(opportunitiesNextRoutes);
 app.use(opportunitiesRankedRoutes);
 app.use(opportunityReplyRoutes);
 app.use(quoteRequestDraftRoutes);

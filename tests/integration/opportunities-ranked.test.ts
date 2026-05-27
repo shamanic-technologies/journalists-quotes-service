@@ -13,6 +13,7 @@ import {
   AUTH_HEADERS,
   TEST_BRAND,
   TEST_CAMPAIGN_A,
+  TEST_CAMPAIGN_B,
   TEST_ORG_A,
 } from "../helpers/test-app.js";
 import { cleanTestData, closeDb } from "../helpers/test-db.js";
@@ -72,7 +73,6 @@ describe("POST /orgs/opportunities/ranked", () => {
 
   function app() {
     return createTestApp({
-      opportunitiesNextDeps: { buildClient: buildMockClient(state) },
       opportunitiesRankedDeps: { buildClient: buildMockClient(state) },
     });
   }
@@ -86,7 +86,7 @@ describe("POST /orgs/opportunities/ranked", () => {
     expect(res.body).toEqual({ status: "ok", opportunities: [], total: 0 });
   });
 
-  it("returns opportunities sorted by score desc, above SCORE_THRESHOLD", async () => {
+  it("returns opportunities sorted by score desc, above SCORE_THRESHOLD, with pitchStatus null for unpitched rows", async () => {
     state.opportunities = [
       {
         featuredQuestionId: 1,
@@ -119,8 +119,10 @@ describe("POST /orgs/opportunities/ranked", () => {
     expect(res.body.opportunities).toHaveLength(2);
     expect(res.body.opportunities[0].featuredQuestionId).toBe(2);
     expect(res.body.opportunities[0].score).toBeCloseTo(0.95);
+    expect(res.body.opportunities[0].pitchStatus).toBeNull();
     expect(res.body.opportunities[1].featuredQuestionId).toBe(3);
     expect(res.body.opportunities[1].score).toBeCloseTo(0.7);
+    expect(res.body.opportunities[1].pitchStatus).toBeNull();
     expect(res.body.total).toBe(2);
   });
 
@@ -164,7 +166,7 @@ describe("POST /orgs/opportunities/ranked", () => {
     expect(ids.size).toBe(4);
   });
 
-  it("excludes opportunities already pitched (non-error) on the campaign", async () => {
+  it("surfaces pitchStatus for opportunities already pitched on the same campaign (no exclusion)", async () => {
     state.opportunities = [
       {
         featuredQuestionId: 9001,
@@ -181,7 +183,7 @@ describe("POST /orgs/opportunities/ranked", () => {
     ];
 
     const a = app();
-    // Populate silver via /next path, then attach a submitted pitch to the first row.
+    // Populate silver via the ranked path, then attach a submitted pitch to the first row.
     await request(a)
       .post("/orgs/opportunities/ranked")
       .set(AUTH_HEADERS)
@@ -207,9 +209,101 @@ describe("POST /orgs/opportunities/ranked", () => {
       .send({ campaignId: TEST_CAMPAIGN_A, brandId: TEST_BRAND });
 
     expect(res.status).toBe(200);
+    expect(res.body.opportunities).toHaveLength(2);
+    expect(res.body.total).toBe(2);
+    const byId: Record<number, { pitchStatus: string | null }> = {};
+    for (const o of res.body.opportunities) {
+      byId[o.featuredQuestionId] = { pitchStatus: o.pitchStatus };
+    }
+    expect(byId[9001].pitchStatus).toBe("submitted");
+    expect(byId[9002].pitchStatus).toBeNull();
+  });
+
+  it("brand-only call (no campaignId): surfaces pitchStatus for a pitch made under a different campaign of the same brand", async () => {
+    state.opportunities = [
+      {
+        featuredQuestionId: 7001,
+        opportunity: "high signal cross-campaign brand dedup",
+        mediaOutlet: "Outlet C",
+        source: "featured",
+      },
+    ];
+
+    const a = app();
+    // Ingest silver first.
+    await request(a)
+      .post("/orgs/opportunities/ranked")
+      .set(AUTH_HEADERS)
+      .send({ brandId: TEST_BRAND });
+
+    const silver = await db
+      .select()
+      .from(providerQuoteRequests)
+      .where(eq(providerQuoteRequests.externalId, "7001"));
+
+    // Pitch was made under CAMPAIGN_A.
+    await db.insert(quotePitches).values({
+      quoteRequestId: silver[0].id,
+      featuredQuestionId: 7001,
+      campaignId: TEST_CAMPAIGN_A,
+      brandId: TEST_BRAND,
+      status: "submitted",
+      deliveryMethod: "featured_api",
+      orgId: TEST_ORG_A,
+    });
+
+    // Brand-only ranked call must surface pitchStatus, NOT exclude.
+    const res = await request(a)
+      .post("/orgs/opportunities/ranked")
+      .set(AUTH_HEADERS)
+      .send({ brandId: TEST_BRAND });
+
+    expect(res.status).toBe(200);
     expect(res.body.opportunities).toHaveLength(1);
-    expect(res.body.opportunities[0].featuredQuestionId).toBe(9002);
-    expect(res.body.total).toBe(1);
+    expect(res.body.opportunities[0].pitchStatus).toBe("submitted");
+  });
+
+  it("campaign-scoped call: pitch under another campaign of the brand is NOT reflected (pitchStatus null)", async () => {
+    state.opportunities = [
+      {
+        featuredQuestionId: 7002,
+        opportunity: "high signal scope isolation",
+        mediaOutlet: "Outlet D",
+        source: "featured",
+      },
+    ];
+
+    const a = app();
+    await request(a)
+      .post("/orgs/opportunities/ranked")
+      .set(AUTH_HEADERS)
+      .send({ brandId: TEST_BRAND });
+
+    const silver = await db
+      .select()
+      .from(providerQuoteRequests)
+      .where(eq(providerQuoteRequests.externalId, "7002"));
+
+    // Pitched under CAMPAIGN_A.
+    await db.insert(quotePitches).values({
+      quoteRequestId: silver[0].id,
+      featuredQuestionId: 7002,
+      campaignId: TEST_CAMPAIGN_A,
+      brandId: TEST_BRAND,
+      status: "submitted",
+      deliveryMethod: "featured_api",
+      orgId: TEST_ORG_A,
+    });
+
+    // Querying campaignId=CAMPAIGN_B sees the row but no pitch within that campaign.
+    const res = await request(a)
+      .post("/orgs/opportunities/ranked")
+      .set(AUTH_HEADERS)
+      .send({ brandId: TEST_BRAND, campaignId: TEST_CAMPAIGN_B });
+
+    expect(res.status).toBe(200);
+    expect(res.body.opportunities).toHaveLength(1);
+    expect(res.body.opportunities[0].pitchStatus).toBeNull();
   });
 
   it("rejects limit > 50 with 400", async () => {

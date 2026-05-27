@@ -30,6 +30,18 @@ export class FeaturedListError extends Error {
   }
 }
 
+export type PitchStatusValue =
+  | "drafted"
+  | "submitted"
+  | "selected"
+  | "published"
+  | "not_selected"
+  | "error"
+  | "length_violation"
+  | "template_missing"
+  | "brand_missing_fields"
+  | "insufficient_credits";
+
 export interface EligibleCandidate {
   id: string;
   provider: string;
@@ -42,6 +54,7 @@ export interface EligibleCandidate {
   pitchUrl: string | null;
   pitchEmail: string | null;
   category: string | null;
+  pitchStatus: PitchStatusValue | null;
 }
 
 export interface RankedCandidate extends EligibleCandidate {
@@ -135,11 +148,18 @@ export async function ingestFeaturedToSilver(args: {
     });
 }
 
+/**
+ * Return every silver candidate for the org (+ shared email pool),
+ * annotated with the latest pitchStatus seen for the brand. When
+ * campaignId is provided, status scope is narrowed to that campaign.
+ * No exclusion — the caller (dashboard) decides display.
+ */
 export async function fetchEligibleCandidates(args: {
   orgId: string;
-  campaignId: string;
+  brandId: string;
+  campaignId?: string;
 }): Promise<EligibleCandidate[]> {
-  const { orgId, campaignId } = args;
+  const { orgId, brandId, campaignId } = args;
 
   const candidates = await db
     .select({
@@ -154,16 +174,8 @@ export async function fetchEligibleCandidates(args: {
       pitchUrl: providerQuoteRequests.pitchUrl,
       pitchEmail: providerQuoteRequests.pitchEmail,
       category: providerQuoteRequests.category,
-      existingPitchStatus: quotePitches.status,
     })
     .from(providerQuoteRequests)
-    .leftJoin(
-      quotePitches,
-      and(
-        eq(quotePitches.quoteRequestId, providerQuoteRequests.id),
-        eq(quotePitches.campaignId, campaignId)
-      )
-    )
     .where(
       or(
         eq(providerQuoteRequests.orgId, orgId),
@@ -171,12 +183,40 @@ export async function fetchEligibleCandidates(args: {
       )
     );
 
-  return candidates
-    .filter(
-      (c) =>
-        c.existingPitchStatus === null || c.existingPitchStatus === "error"
-    )
-    .map(({ existingPitchStatus: _unused, ...rest }) => rest);
+  const pitches = await db
+    .select({
+      quoteRequestId: quotePitches.quoteRequestId,
+      status: quotePitches.status,
+      updatedAt: quotePitches.updatedAt,
+    })
+    .from(quotePitches)
+    .where(
+      campaignId
+        ? and(
+            eq(quotePitches.brandId, brandId),
+            eq(quotePitches.campaignId, campaignId)
+          )
+        : eq(quotePitches.brandId, brandId)
+    );
+
+  const latestByRequest = new Map<
+    string,
+    { status: PitchStatusValue; updatedAt: Date }
+  >();
+  for (const p of pitches) {
+    const prev = latestByRequest.get(p.quoteRequestId);
+    if (!prev || prev.updatedAt < p.updatedAt) {
+      latestByRequest.set(p.quoteRequestId, {
+        status: p.status,
+        updatedAt: p.updatedAt,
+      });
+    }
+  }
+
+  return candidates.map((c) => ({
+    ...c,
+    pitchStatus: latestByRequest.get(c.id)?.status ?? null,
+  }));
 }
 
 // chat-service POST /orgs/rag/score caps `documents` at 100 per request.
@@ -194,7 +234,7 @@ export async function rankCandidates(args: {
   candidates: EligibleCandidate[];
   orgId: string;
   brandId: string;
-  campaignId: string;
+  campaignId?: string;
   userId?: string;
   runId?: string;
   scoreThreshold: number;
@@ -233,7 +273,7 @@ export async function rankCandidates(args: {
       .values(
         mergedResults.map((r) => ({
           quoteRequestId: r.id,
-          campaignId,
+          campaignId: campaignId ?? null,
           brandId,
           score: r.score.toFixed(2),
           whyRelevant: r.whyRelevant ?? null,
@@ -242,13 +282,13 @@ export async function rankCandidates(args: {
         }))
       )
       .onConflictDoUpdate({
-        target: [quotePriorities.quoteRequestId, quotePriorities.campaignId],
+        target: [quotePriorities.quoteRequestId, quotePriorities.brandId],
         set: {
           score: drizzleSql`excluded.score`,
           whyRelevant: drizzleSql`excluded.why_relevant`,
           scoredAt: drizzleSql`now()`,
           scoredByRunId: drizzleSql`excluded.scored_by_run_id`,
-          brandId: drizzleSql`excluded.brand_id`,
+          campaignId: drizzleSql`excluded.campaign_id`,
         },
       });
   }

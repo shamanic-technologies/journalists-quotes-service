@@ -16,7 +16,7 @@ const KS_KEY = "test-key-service-key";
 
 const CTX = {
   callerMethod: "POST",
-  callerPath: "/orgs/opportunities/next",
+  callerPath: "/orgs/opportunities/ranked",
   orgId: "org-1",
 } as const;
 
@@ -120,7 +120,7 @@ describe("key-service-client.getFeaturedCredentials", () => {
 
     await getFeaturedCredentials({
       callerMethod: "POST",
-      callerPath: "/orgs/opportunities/next",
+      callerPath: "/orgs/opportunities/ranked",
       orgId: "org-1",
       userId: "user-1",
       runId: "run-9",
@@ -132,7 +132,7 @@ describe("key-service-client.getFeaturedCredentials", () => {
       expect(headers["x-api-key"]).toBe(KS_KEY);
       expect(headers["x-caller-service"]).toBe("journalists-quotes-service");
       expect(headers["x-caller-method"]).toBe("POST");
-      expect(headers["x-caller-path"]).toBe("/orgs/opportunities/next");
+      expect(headers["x-caller-path"]).toBe("/orgs/opportunities/ranked");
       expect(headers["x-org-id"]).toBe("org-1");
       expect(headers["x-user-id"]).toBe("user-1");
       expect(headers["x-run-id"]).toBe("run-9");

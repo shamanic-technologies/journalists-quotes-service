@@ -17,8 +17,8 @@ import {
 const SCORE_THRESHOLD = Number(process.env.SCORE_THRESHOLD ?? "0.5");
 
 const OpportunityRankedRequestSchema = z.object({
-  campaignId: z.string().uuid(),
   brandId: z.string().uuid(),
+  campaignId: z.string().uuid().optional(),
   limit: z.number().int().min(1).max(50).optional(),
   offset: z.number().int().min(0).optional(),
 });
@@ -46,7 +46,7 @@ export function createOpportunitiesRankedRouter(
       res.status(400).json({ error: parsed.error.message });
       return;
     }
-    const { campaignId, brandId } = parsed.data;
+    const { brandId, campaignId } = parsed.data;
     const limit = parsed.data.limit ?? 20;
     const offset = parsed.data.offset ?? 0;
     const orgId = req.orgId!;
@@ -70,7 +70,11 @@ export function createOpportunitiesRankedRouter(
       return;
     }
 
-    const eligible = await fetchEligibleCandidates({ orgId, campaignId });
+    const eligible = await fetchEligibleCandidates({
+      orgId,
+      brandId,
+      campaignId,
+    });
     const ranked = await rankCandidates({
       candidates: eligible,
       orgId,
@@ -100,6 +104,7 @@ export function createOpportunitiesRankedRouter(
         category: r.category,
         score: r.score,
         whyRelevant: r.whyRelevant,
+        pitchStatus: r.pitchStatus,
       })),
       total,
     });
