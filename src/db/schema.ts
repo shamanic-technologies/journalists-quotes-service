@@ -168,7 +168,7 @@ export const quotePriorities = pgTable(
     quoteRequestId: uuid("quote_request_id")
       .notNull()
       .references(() => providerQuoteRequests.id, { onDelete: "cascade" }),
-    campaignId: uuid("campaign_id").notNull(),
+    campaignId: uuid("campaign_id"),
     brandId: uuid("brand_id").notNull(),
     score: numeric("score", { precision: 5, scale: 2 }).notNull(),
     whyRelevant: text("why_relevant"),
@@ -179,11 +179,8 @@ export const quotePriorities = pgTable(
     orgId: uuid("org_id").notNull(),
   },
   (table) => [
-    primaryKey({ columns: [table.quoteRequestId, table.campaignId] }),
-    index("idx_quote_priorities_campaign_score").on(
-      table.campaignId,
-      table.score
-    ),
+    primaryKey({ columns: [table.quoteRequestId, table.brandId] }),
+    index("idx_quote_priorities_brand_score").on(table.brandId, table.score),
   ]
 );
 
@@ -222,7 +219,7 @@ export const quotePitches = pgTable(
     ),
     featuredQuestionId: integer("featured_question_id"),
     featuredProfileId: integer("featured_profile_id"),
-    campaignId: uuid("campaign_id").notNull(),
+    campaignId: uuid("campaign_id"),
     brandId: uuid("brand_id").notNull(),
     draft: text("draft"),
     pitchCharCount: integer("pitch_char_count"),
@@ -257,7 +254,10 @@ export const quotePitches = pgTable(
     index("idx_quote_pitches_quote_request").on(table.quoteRequestId),
     uniqueIndex("idx_quote_pitches_opportunity_brand")
       .on(table.quoteOpportunityId, table.brandId)
-      .where(sql`quote_opportunity_id IS NOT NULL AND status <> 'error'`),
+      .where(sql`quote_opportunity_id IS NOT NULL AND status NOT IN ('error', 'length_violation', 'template_missing', 'brand_missing_fields', 'insufficient_credits')`),
+    uniqueIndex("idx_quote_pitches_request_brand")
+      .on(table.quoteRequestId, table.brandId)
+      .where(sql`quote_opportunity_id IS NULL AND status NOT IN ('error', 'length_violation', 'template_missing', 'brand_missing_fields', 'insufficient_credits')`),
   ]
 );
 

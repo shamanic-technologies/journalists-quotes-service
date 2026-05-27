@@ -12,27 +12,153 @@ import {
   type GenerateExpertQuotePitchRequest,
   type ContentGenerationCallerIdentity,
 } from "../lib/content-generation-client.js";
+import {
+  extractFields as defaultExtractFields,
+  BrandServiceError,
+  type ExtractFieldsResponse,
+} from "../lib/brand-client.js";
 
 const PARAMS_SCHEMA = z.object({ id: z.string().uuid() });
 
-const BODY_SCHEMA = z.object({
-  brandId: z.string().uuid(),
-  campaignId: z.string().uuid(),
-  spokesperson: z.string().min(1),
-  expertiseTopics: z.string().min(1),
-  responseStyle: z.string().min(1),
-  companyContext: z.string().min(1),
-  valueProposition: z.string().min(1),
-  additionalContext: z.string().optional(),
-});
+const BODY_SCHEMA = z
+  .object({
+    brandId: z.string().uuid(),
+    campaignId: z.string().uuid().optional(),
+    spokesperson: z.string().min(1).optional(),
+    expertiseTopics: z.string().min(1).optional(),
+    responseStyle: z.string().min(1).optional(),
+    companyContext: z.string().min(1).optional(),
+    valueProposition: z.string().min(1).optional(),
+    additionalContext: z.string().optional(),
+  })
+  .refine(
+    (data) => {
+      const legacy = !!(
+        data.campaignId &&
+        data.spokesperson &&
+        data.expertiseTopics &&
+        data.responseStyle &&
+        data.companyContext &&
+        data.valueProposition
+      );
+      const brandOnly =
+        !data.campaignId &&
+        !data.spokesperson &&
+        !data.expertiseTopics &&
+        !data.responseStyle &&
+        !data.companyContext &&
+        !data.valueProposition;
+      return legacy || brandOnly;
+    },
+    {
+      message:
+        "body must be either brand-only { brandId } or legacy { brandId, campaignId, spokesperson, expertiseTopics, responseStyle, companyContext, valueProposition }",
+    }
+  );
+
+const PR_FIELD_SPECS = [
+  {
+    key: "spokesperson",
+    description:
+      "Name + title of the brand's PR spokesperson (e.g. 'Jane Doe, CEO of ErgoCorp'). Pick the founder or CEO if no PR contact is named.",
+  },
+  {
+    key: "expertiseTopics",
+    description:
+      "Comma-separated topics the spokesperson can speak on for press quotes.",
+  },
+  {
+    key: "responseStyle",
+    description:
+      "One-sentence guidance on tone + style for press responses (e.g. 'direct, data-driven, no fluff').",
+  },
+  {
+    key: "companyContext",
+    description:
+      "1-2 sentence company elevator pitch including founding year and a notable metric.",
+  },
+  {
+    key: "valueProposition",
+    description:
+      "1-sentence value proposition or unique angle the company brings to expert commentary.",
+  },
+] as const;
 
 export type GenerateExpertQuotePitchFn = (
   request: GenerateExpertQuotePitchRequest,
   identity: ContentGenerationCallerIdentity
 ) => Promise<ExpertQuotePitchSuccessResponse>;
 
+export type ExtractFieldsFn = (args: {
+  brandIds: string[];
+  fields: { key: string; description: string }[];
+}) => Promise<ExtractFieldsResponse>;
+
 export interface QuoteRequestDraftDeps {
   generateExpertQuotePitch?: GenerateExpertQuotePitchFn;
+  extractFields?: ExtractFieldsFn;
+}
+
+interface ResolvedInputs {
+  spokesperson: string;
+  expertiseTopics: string;
+  responseStyle: string;
+  companyContext: string;
+  valueProposition: string;
+}
+
+function coerceFieldString(
+  value: unknown,
+  key: string,
+  brandId: string
+): string {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (Array.isArray(value)) return value.filter(Boolean).join(", ");
+  if (value && typeof value === "object")
+    return JSON.stringify(value);
+  throw new Error(
+    `brand-service extract-fields returned empty/missing value for key '${key}' on brand ${brandId}`
+  );
+}
+
+async function resolveBrandInputs(
+  brandId: string,
+  extractFields: ExtractFieldsFn
+): Promise<ResolvedInputs> {
+  const result = await extractFields({
+    brandIds: [brandId],
+    fields: PR_FIELD_SPECS.map((f) => ({
+      key: f.key,
+      description: f.description,
+    })),
+  });
+  return {
+    spokesperson: coerceFieldString(
+      result.fields.spokesperson?.value,
+      "spokesperson",
+      brandId
+    ),
+    expertiseTopics: coerceFieldString(
+      result.fields.expertiseTopics?.value,
+      "expertiseTopics",
+      brandId
+    ),
+    responseStyle: coerceFieldString(
+      result.fields.responseStyle?.value,
+      "responseStyle",
+      brandId
+    ),
+    companyContext: coerceFieldString(
+      result.fields.companyContext?.value,
+      "companyContext",
+      brandId
+    ),
+    valueProposition: coerceFieldString(
+      result.fields.valueProposition?.value,
+      "valueProposition",
+      brandId
+    ),
+  };
 }
 
 export function createQuoteRequestDraftRouter(
@@ -40,6 +166,7 @@ export function createQuoteRequestDraftRouter(
 ): Router {
   const router = Router();
   const generate = deps.generateExpertQuotePitch ?? defaultGenerateExpertQuotePitch;
+  const extractFields = deps.extractFields ?? defaultExtractFields;
 
   router.post("/orgs/quote-requests/:id/draft", async (req, res) => {
     const paramsParsed = PARAMS_SCHEMA.safeParse(req.params);
@@ -53,19 +180,13 @@ export function createQuoteRequestDraftRouter(
       return;
     }
     const { id } = paramsParsed.data;
-    const {
-      brandId,
-      campaignId,
-      spokesperson,
-      expertiseTopics,
-      responseStyle,
-      companyContext,
-      valueProposition,
-      additionalContext,
-    } = bodyParsed.data;
+    const data = bodyParsed.data;
     const orgId = req.orgId!;
     const userId = req.userId;
     const runId = req.runId;
+    const brandId = data.brandId;
+    const campaignId = data.campaignId;
+    const isBrandOnly = !campaignId;
 
     const rows = await db
       .select()
@@ -87,15 +208,37 @@ export function createQuoteRequestDraftRouter(
       return;
     }
 
+    let inputs: ResolvedInputs;
+    if (isBrandOnly) {
+      try {
+        inputs = await resolveBrandInputs(brandId, extractFields);
+      } catch (err) {
+        if (err instanceof BrandServiceError) {
+          res.status(502).json({ error: err.message });
+          return;
+        }
+        res.status(502).json({ error: (err as Error).message });
+        return;
+      }
+    } else {
+      inputs = {
+        spokesperson: data.spokesperson!,
+        expertiseTopics: data.expertiseTopics!,
+        responseStyle: data.responseStyle!,
+        companyContext: data.companyContext!,
+        valueProposition: data.valueProposition!,
+      };
+    }
+
     const request: GenerateExpertQuotePitchRequest = {
       variables: {
         brands: [
           {
-            name: spokesperson,
-            industry: companyContext,
-            expertise: expertiseTopics,
-            voice: responseStyle,
-            targetAudience: valueProposition,
+            name: inputs.spokesperson,
+            industry: inputs.companyContext,
+            expertise: inputs.expertiseTopics,
+            voice: inputs.responseStyle,
+            targetAudience: inputs.valueProposition,
           },
         ],
         request: {
@@ -105,7 +248,8 @@ export function createQuoteRequestDraftRouter(
           deadline: row.deadline ? row.deadline.toISOString() : null,
         },
         additionalContext:
-          additionalContext ?? `${companyContext}\n\n${valueProposition}`,
+          data.additionalContext ??
+          `${inputs.companyContext}\n\n${inputs.valueProposition}`,
       },
       brandIds: [brandId],
       campaignId,

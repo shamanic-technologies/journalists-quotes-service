@@ -158,39 +158,11 @@ export const QuotePitchListQuerySchema = z.object({
 
 // ==================== Opportunity Workflow Schemas ====================
 
-export const OpportunityNextRequestSchema = z
-  .object({
-    campaignId: z.string().uuid(),
-    brandId: z.string().uuid(),
-  })
-  .openapi("OpportunityNextRequest");
-
-export const OpportunityNextResponseSchema = z
-  .union([
-    z.object({
-      status: z.literal("match"),
-      opportunityId: z.string().uuid(),
-      provider: z.string(),
-      ingestionChannel: z.string(),
-      featuredQuestionId: z.number().int().nullable(),
-      mediaOutlet: z.string().nullable(),
-      journalistName: z.string().nullable(),
-      opportunityText: z.string(),
-      deadline: z.string().nullable(),
-      pitchUrl: z.string().nullable(),
-      pitchEmail: z.string().nullable(),
-      score: z.number(),
-      whyRelevant: z.string().nullable(),
-    }),
-    z.object({ status: z.literal("no_match") }),
-  ])
-  .openapi("OpportunityNextResponse");
-
 export const OpportunityReplyRequestSchema = z
   .object({
     pitchContent: z.string().min(1),
     brandId: z.string().uuid(),
-    campaignId: z.string().uuid(),
+    campaignId: z.string().uuid().optional(),
     subject: z.string().optional(),
   })
   .openapi("OpportunityReplyRequest");
@@ -199,12 +171,27 @@ export const OpportunityReplyRequestSchema = z
 
 export const OpportunityRankedRequestSchema = z
   .object({
-    campaignId: z.string().uuid(),
     brandId: z.string().uuid(),
+    campaignId: z.string().uuid().optional(),
     limit: z.number().int().min(1).max(50).optional(),
     offset: z.number().int().min(0).optional(),
   })
   .openapi("OpportunityRankedRequest");
+
+export const PitchStatusSchema = z
+  .enum([
+    "drafted",
+    "submitted",
+    "selected",
+    "published",
+    "not_selected",
+    "error",
+    "length_violation",
+    "template_missing",
+    "brand_missing_fields",
+    "insufficient_credits",
+  ])
+  .openapi("PitchStatus");
 
 export const RankedOpportunitySchema = z
   .object({
@@ -221,6 +208,7 @@ export const RankedOpportunitySchema = z
     category: z.string().nullable(),
     score: z.number(),
     whyRelevant: z.string().nullable(),
+    pitchStatus: PitchStatusSchema.nullable(),
   })
   .openapi("RankedOpportunity");
 
@@ -237,12 +225,12 @@ export const OpportunityRankedResponseSchema = z
 export const QuoteRequestDraftRequestSchema = z
   .object({
     brandId: z.string().uuid(),
-    campaignId: z.string().uuid(),
-    spokesperson: z.string().min(1),
-    expertiseTopics: z.string().min(1),
-    responseStyle: z.string().min(1),
-    companyContext: z.string().min(1),
-    valueProposition: z.string().min(1),
+    campaignId: z.string().uuid().optional(),
+    spokesperson: z.string().min(1).optional(),
+    expertiseTopics: z.string().min(1).optional(),
+    responseStyle: z.string().min(1).optional(),
+    companyContext: z.string().min(1).optional(),
+    valueProposition: z.string().min(1).optional(),
     additionalContext: z.string().optional(),
   })
   .openapi("QuoteRequestDraftRequest");
@@ -358,41 +346,9 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
-  path: "/orgs/opportunities/next",
-  summary:
-    "Pick the next best journalist opportunity for the (campaign, brand). Merges silver email-sourced rows with a live fetch of Featured.com opportunities, scores via RAG, returns top above SCORE_THRESHOLD.",
-  security: [{ [apiKeyAuth.name]: [] }],
-  request: {
-    headers: orgHeaders,
-    body: {
-      content: {
-        "application/json": { schema: OpportunityNextRequestSchema },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: "Top opportunity or no_match",
-      content: {
-        "application/json": { schema: OpportunityNextResponseSchema },
-      },
-    },
-    400: {
-      description: "Validation error",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    502: {
-      description: "Upstream service unavailable (key-service, Featured)",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-  },
-});
-
-registry.registerPath({
-  method: "post",
   path: "/orgs/opportunities/ranked",
   summary:
-    "Return the top-N ranked opportunities for a (campaign, brand). Same RAG scoring pipeline as /next, paginated. Used by the HITL dashboard queue.",
+    "Return the top-N ranked opportunities for the brand (campaignId optional). RAG-scored, paginated, annotated with the latest pitchStatus seen for the brand. Used by the HITL public report queue (brand-scoped) and the in-dashboard HITL view (campaign-scoped).",
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
     headers: orgHeaders,
@@ -424,7 +380,7 @@ registry.registerPath({
   method: "post",
   path: "/orgs/quote-requests/{id}/draft",
   summary:
-    "Generate an AI-drafted pitch for the given quote request via content-generation-service. Returns the drafted text without submitting — caller decides when/whether to submit via POST /orgs/opportunities/:id/reply.",
+    "Generate an AI-drafted pitch for the given quote request via content-generation-service. Body accepts either brand-only `{ brandId }` (PR inputs resolved via brand-service extract-fields) or legacy `{ brandId, campaignId, spokesperson, expertiseTopics, responseStyle, companyContext, valueProposition, additionalContext? }`. Returns the drafted text without submitting — caller decides when/whether to submit via POST /orgs/opportunities/:id/reply.",
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
     headers: orgHeaders,
@@ -469,7 +425,7 @@ registry.registerPath({
   method: "post",
   path: "/orgs/opportunities/{id}/reply",
   summary:
-    "Submit a pitch reply for the given opportunity. Dispatches to Featured submitAnswer (provider=featured) or email-gateway-service /orgs/send (other providers, e.g. haro).",
+    "Submit a pitch reply for the given opportunity. Body: `{ pitchContent, brandId, campaignId?, subject? }`. Dispatches to Featured submitAnswer (provider=featured) or email-gateway-service /orgs/send (other providers, e.g. haro). Idempotency: brand-scoped when campaignId absent (any non-retryable pitch by the brand returns already_submitted); campaign-scoped when campaignId present.",
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
     headers: orgHeaders,

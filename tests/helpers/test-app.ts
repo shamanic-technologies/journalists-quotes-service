@@ -3,10 +3,6 @@ import express from "express";
 import cors from "cors";
 import healthRoutes from "../../src/routes/health.js";
 import {
-  createOpportunitiesNextRouter,
-  type OpportunitiesNextDeps,
-} from "../../src/routes/opportunities-next.js";
-import {
   createOpportunitiesRankedRouter,
   type OpportunitiesRankedDeps,
 } from "../../src/routes/opportunities-ranked.js";
@@ -30,7 +26,6 @@ import {
 import { hmacVerify } from "../../src/middleware/hmac-verify.js";
 
 export interface TestAppDeps {
-  opportunitiesNextDeps?: OpportunitiesNextDeps;
   opportunitiesRankedDeps?: OpportunitiesRankedDeps;
   opportunityReplyDeps?: OpportunityReplyDeps;
   quoteRequestDraftDeps?: QuoteRequestDraftDeps;
@@ -66,7 +61,6 @@ export function createTestApp(deps: TestAppDeps = {}) {
   app.use(processInboundEmailsRoutes);
 
   app.use("/orgs", apiKeyAuth, requireOrgId, withRunTracking);
-  app.use(createOpportunitiesNextRouter(deps.opportunitiesNextDeps));
   app.use(createOpportunitiesRankedRouter(deps.opportunitiesRankedDeps));
   app.use(createOpportunityReplyRouter(deps.opportunityReplyDeps));
   app.use(createQuoteRequestDraftRouter(deps.quoteRequestDraftDeps));

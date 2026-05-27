@@ -19,120 +19,20 @@
       }
     },
     "schemas": {
-      "OpportunityNextResponse": {
-        "anyOf": [
-          {
-            "type": "object",
-            "properties": {
-              "status": {
-                "type": "string",
-                "enum": [
-                  "match"
-                ]
-              },
-              "opportunityId": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "provider": {
-                "type": "string"
-              },
-              "ingestionChannel": {
-                "type": "string"
-              },
-              "featuredQuestionId": {
-                "type": "integer",
-                "nullable": true
-              },
-              "mediaOutlet": {
-                "type": "string",
-                "nullable": true
-              },
-              "journalistName": {
-                "type": "string",
-                "nullable": true
-              },
-              "opportunityText": {
-                "type": "string"
-              },
-              "deadline": {
-                "type": "string",
-                "nullable": true
-              },
-              "pitchUrl": {
-                "type": "string",
-                "nullable": true
-              },
-              "pitchEmail": {
-                "type": "string",
-                "nullable": true
-              },
-              "score": {
-                "type": "number"
-              },
-              "whyRelevant": {
-                "type": "string",
-                "nullable": true
-              }
-            },
-            "required": [
-              "status",
-              "opportunityId",
-              "provider",
-              "ingestionChannel",
-              "featuredQuestionId",
-              "mediaOutlet",
-              "journalistName",
-              "opportunityText",
-              "deadline",
-              "pitchUrl",
-              "pitchEmail",
-              "score",
-              "whyRelevant"
-            ]
-          },
-          {
-            "type": "object",
-            "properties": {
-              "status": {
-                "type": "string",
-                "enum": [
-                  "no_match"
-                ]
-              }
-            },
-            "required": [
-              "status"
-            ]
-          }
-        ]
-      },
-      "ErrorResponse": {
-        "type": "object",
-        "properties": {
-          "error": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "error"
-        ]
-      },
-      "OpportunityNextRequest": {
-        "type": "object",
-        "properties": {
-          "campaignId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "brandId": {
-            "type": "string",
-            "format": "uuid"
-          }
-        },
-        "required": [
-          "campaignId",
-          "brandId"
+      "PitchStatus": {
+        "type": "string",
+        "nullable": true,
+        "enum": [
+          "drafted",
+          "submitted",
+          "selected",
+          "published",
+          "not_selected",
+          "error",
+          "length_violation",
+          "template_missing",
+          "brand_missing_fields",
+          "insufficient_credits"
         ]
       },
       "RankedOpportunity": {
@@ -185,6 +85,9 @@
           "whyRelevant": {
             "type": "string",
             "nullable": true
+          },
+          "pitchStatus": {
+            "$ref": "#/components/schemas/PitchStatus"
           }
         },
         "required": [
@@ -200,7 +103,8 @@
           "pitchEmail",
           "category",
           "score",
-          "whyRelevant"
+          "whyRelevant",
+          "pitchStatus"
         ]
       },
       "OpportunityRankedResponse": {
@@ -228,14 +132,25 @@
           "total"
         ]
       },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
       "OpportunityRankedRequest": {
         "type": "object",
         "properties": {
-          "campaignId": {
+          "brandId": {
             "type": "string",
             "format": "uuid"
           },
-          "brandId": {
+          "campaignId": {
             "type": "string",
             "format": "uuid"
           },
@@ -250,7 +165,6 @@
           }
         },
         "required": [
-          "campaignId",
           "brandId"
         ]
       },
@@ -344,13 +258,7 @@
           }
         },
         "required": [
-          "brandId",
-          "campaignId",
-          "spokesperson",
-          "expertiseTopics",
-          "responseStyle",
-          "companyContext",
-          "valueProposition"
+          "brandId"
         ]
       },
       "OpportunityReplyResponse": {
@@ -416,8 +324,7 @@
         },
         "required": [
           "pitchContent",
-          "brandId",
-          "campaignId"
+          "brandId"
         ]
       },
       "ProcessInboundEmailsResponse": {
@@ -851,71 +758,9 @@
         }
       }
     },
-    "/orgs/opportunities/next": {
-      "post": {
-        "summary": "Pick the next best journalist opportunity for the (campaign, brand). Merges silver email-sourced rows with a live fetch of Featured.com opportunities, scores via RAG, returns top above SCORE_THRESHOLD.",
-        "security": [
-          {
-            "ApiKeyAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "required": true,
-            "name": "x-org-id",
-            "in": "header"
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/OpportunityNextRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Top opportunity or no_match",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OpportunityNextResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "Upstream service unavailable (key-service, Featured)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/orgs/opportunities/ranked": {
       "post": {
-        "summary": "Return the top-N ranked opportunities for a (campaign, brand). Same RAG scoring pipeline as /next, paginated. Used by the HITL dashboard queue.",
+        "summary": "Return the top-N ranked opportunities for the brand (campaignId optional). RAG-scored, paginated, annotated with the latest pitchStatus seen for the brand. Used by the HITL public report queue (brand-scoped) and the in-dashboard HITL view (campaign-scoped).",
         "security": [
           {
             "ApiKeyAuth": []
@@ -977,7 +822,7 @@
     },
     "/orgs/quote-requests/{id}/draft": {
       "post": {
-        "summary": "Generate an AI-drafted pitch for the given quote request via content-generation-service. Returns the drafted text without submitting — caller decides when/whether to submit via POST /orgs/opportunities/:id/reply.",
+        "summary": "Generate an AI-drafted pitch for the given quote request via content-generation-service. Body accepts either brand-only `{ brandId }` (PR inputs resolved via brand-service extract-fields) or legacy `{ brandId, campaignId, spokesperson, expertiseTopics, responseStyle, companyContext, valueProposition, additionalContext? }`. Returns the drafted text without submitting — caller decides when/whether to submit via POST /orgs/opportunities/:id/reply.",
         "security": [
           {
             "ApiKeyAuth": []
@@ -1065,7 +910,7 @@
     },
     "/orgs/opportunities/{id}/reply": {
       "post": {
-        "summary": "Submit a pitch reply for the given opportunity. Dispatches to Featured submitAnswer (provider=featured) or email-gateway-service /orgs/send (other providers, e.g. haro).",
+        "summary": "Submit a pitch reply for the given opportunity. Body: `{ pitchContent, brandId, campaignId?, subject? }`. Dispatches to Featured submitAnswer (provider=featured) or email-gateway-service /orgs/send (other providers, e.g. haro). Idempotency: brand-scoped when campaignId absent (any non-retryable pitch by the brand returns already_submitted); campaign-scoped when campaignId present.",
         "security": [
           {
             "ApiKeyAuth": []

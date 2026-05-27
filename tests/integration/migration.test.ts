@@ -5,6 +5,7 @@ import {
   providerQuoteRequests,
   quoteOpportunities,
   quotePitches,
+  quotePriorities,
 } from "../../src/db/schema.js";
 
 async function columnExists(table: string, column: string): Promise<boolean> {
@@ -223,5 +224,181 @@ describe("0001 migration — multi-source opportunities", () => {
     await db.delete(quotePitches);
     await db.delete(providerQuoteRequests);
     await db.delete(quoteOpportunities);
+  });
+});
+
+describe("0003 migration — brand-canonical dedup + score cache", () => {
+  it("quote_priorities campaign_id is nullable", async () => {
+    expect(await isNullable("quote_priorities", "campaign_id")).toBe(true);
+  });
+
+  it("quote_pitches campaign_id is nullable", async () => {
+    expect(await isNullable("quote_pitches", "campaign_id")).toBe(true);
+  });
+
+  it("quote_priorities PK is (quote_request_id, brand_id)", async () => {
+    const rows = await sql<{ contype: string; pkdef: string }[]>`
+      SELECT con.contype, pg_get_constraintdef(con.oid) AS pkdef
+      FROM pg_constraint con
+      WHERE con.conrelid = '"quote_priorities"'::regclass
+        AND con.contype  = 'p'
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].pkdef).toContain("brand_id");
+    expect(rows[0].pkdef).not.toContain("campaign_id");
+  });
+
+  it("idx_quote_priorities_brand_score replaces idx_quote_priorities_campaign_score", async () => {
+    expect(await indexExists("idx_quote_priorities_brand_score")).toBe(true);
+    expect(await indexExists("idx_quote_priorities_campaign_score")).toBe(false);
+  });
+
+  it("new partial unique idx_quote_pitches_request_brand exists", async () => {
+    expect(await indexExists("idx_quote_pitches_request_brand")).toBe(true);
+  });
+
+  it("idx_quote_pitches_request_brand blocks duplicate non-retryable pitches without opportunity_id", async () => {
+    const orgId = "00000000-0000-0000-0000-0000000000ff";
+    const brandId = "00000000-0000-0000-0000-0000000000bd";
+    const campaignId = "00000000-0000-0000-0000-0000000000da";
+
+    const [req] = await db
+      .insert(providerQuoteRequests)
+      .values({
+        provider: "haro",
+        ingestionChannel: "email",
+        externalId: "ext-req-brand-uniq",
+        opportunityText: "x",
+        orgId,
+      })
+      .returning();
+
+    await db.insert(quotePitches).values({
+      quoteRequestId: req.id,
+      campaignId,
+      brandId,
+      draft: "d".repeat(150),
+      status: "submitted",
+      deliveryMethod: "email_reply",
+      orgId,
+    });
+
+    let conflict = false;
+    try {
+      await db.insert(quotePitches).values({
+        quoteRequestId: req.id,
+        campaignId,
+        brandId,
+        draft: "d".repeat(150),
+        status: "submitted",
+        deliveryMethod: "email_reply",
+        orgId,
+      });
+    } catch {
+      conflict = true;
+    }
+    expect(conflict).toBe(true);
+
+    // length_violation (retryable) bypasses the partial unique.
+    await db.insert(quotePitches).values({
+      quoteRequestId: req.id,
+      campaignId,
+      brandId,
+      status: "length_violation",
+      deliveryMethod: "email_reply",
+      orgId,
+    });
+
+    await db.delete(quotePitches);
+    await db.delete(providerQuoteRequests);
+  });
+
+  it("retryable statuses (length_violation, template_missing, etc.) bypass idx_quote_pitches_opportunity_brand", async () => {
+    const orgId = "00000000-0000-0000-0000-0000000000fe";
+    const brandId = "00000000-0000-0000-0000-0000000000bc";
+    const campaignId = "00000000-0000-0000-0000-0000000000db";
+
+    const [opp] = await db
+      .insert(quoteOpportunities)
+      .values({ fingerprint: "fp-test-retryable", canonicalText: "x" })
+      .returning();
+    const [req] = await db
+      .insert(providerQuoteRequests)
+      .values({
+        provider: "haro",
+        ingestionChannel: "email",
+        externalId: "ext-req-retryable",
+        opportunityText: "x",
+        orgId,
+        quoteOpportunityId: opp.id,
+      })
+      .returning();
+
+    await db.insert(quotePitches).values({
+      quoteRequestId: req.id,
+      quoteOpportunityId: opp.id,
+      campaignId,
+      brandId,
+      status: "length_violation",
+      deliveryMethod: "email_reply",
+      orgId,
+    });
+    await db.insert(quotePitches).values({
+      quoteRequestId: req.id,
+      quoteOpportunityId: opp.id,
+      campaignId,
+      brandId,
+      status: "length_violation",
+      deliveryMethod: "email_reply",
+      orgId,
+    });
+
+    const rows = await db.select().from(quotePitches);
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+
+    await db.delete(quotePitches);
+    await db.delete(providerQuoteRequests);
+    await db.delete(quoteOpportunities);
+  });
+
+  it("quote_priorities row upsert on (quote_request_id, brand_id) collapses across campaigns", async () => {
+    const orgId = "00000000-0000-0000-0000-0000000000fa";
+    const brandId = "00000000-0000-0000-0000-0000000000be";
+
+    const [req] = await db
+      .insert(providerQuoteRequests)
+      .values({
+        provider: "haro",
+        ingestionChannel: "email",
+        externalId: "ext-req-priority-brand-pk",
+        opportunityText: "x",
+        orgId,
+      })
+      .returning();
+
+    await db.insert(quotePriorities).values({
+      quoteRequestId: req.id,
+      campaignId: "00000000-0000-0000-0000-0000000000dc",
+      brandId,
+      score: "0.75",
+      orgId,
+    });
+
+    let conflict = false;
+    try {
+      await db.insert(quotePriorities).values({
+        quoteRequestId: req.id,
+        campaignId: "00000000-0000-0000-0000-0000000000dd",
+        brandId,
+        score: "0.85",
+        orgId,
+      });
+    } catch {
+      conflict = true;
+    }
+    expect(conflict).toBe(true);
+
+    await db.delete(quotePriorities);
+    await db.delete(providerQuoteRequests);
   });
 });
