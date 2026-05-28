@@ -61,6 +61,10 @@ export function createOpportunitiesNextRouter(
     const userId = req.userId;
     const runId = req.runId;
 
+    console.log(
+      `[journalists-quotes-service] /next stage=request-entry orgId=${orgId} brandIds=${brandIds.join(",")} campaignId=${campaignId ?? "null"}`
+    );
+
     let best;
     try {
       best = await pickNextOpportunity({
