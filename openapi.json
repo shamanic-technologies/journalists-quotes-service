@@ -151,6 +151,91 @@
           }
         }
       },
+      "PitchStatus": {
+        "type": "string",
+        "nullable": true,
+        "enum": [
+          "drafted",
+          "submitted",
+          "selected",
+          "published",
+          "not_selected",
+          "error",
+          "length_violation",
+          "template_missing",
+          "brand_missing_fields",
+          "insufficient_credits"
+        ]
+      },
+      "RankedOpportunity": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/FullQuoteOpportunity"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "pitchStatus": {
+                "$ref": "#/components/schemas/PitchStatus"
+              }
+            },
+            "required": [
+              "pitchStatus"
+            ]
+          }
+        ]
+      },
+      "OpportunityRankedResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok"
+            ]
+          },
+          "opportunities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RankedOpportunity"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "brandIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "required": [
+          "status",
+          "opportunities",
+          "total",
+          "brandIds"
+        ]
+      },
+      "OpportunityRankedRequest": {
+        "type": "object",
+        "properties": {
+          "campaignId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "OpportunityReplyResponse": {
         "type": "object",
         "properties": {
@@ -708,6 +793,68 @@
           },
           "502": {
             "description": "Upstream service unavailable (key-service, Featured)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/opportunities/ranked": {
+      "post": {
+        "summary": "Paginated read-only list of RAG-scored Gold-cluster opportunities for the brand-set. Body: `{ campaignId?, limit?, offset? }`. Reads from `quote_priorities` populated by `/orgs/opportunities/next`; never scores synchronously. Annotated with the latest `pitchStatus` for the exact brand-set (campaign-scoped if `campaignId` provided). Used by the HITL dashboard + public report queue.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-org-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted). All ranking, score caching, and pitch idempotency keys use the canonical brand_ids[] set."
+            },
+            "required": true,
+            "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted). All ranking, score caching, and pitch idempotency keys use the canonical brand_ids[] set.",
+            "name": "x-brand-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpportunityRankedRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ranked opportunities above SCORE_THRESHOLD, sorted by score desc",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpportunityRankedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error (missing/invalid x-brand-id header, bad body)",
             "content": {
               "application/json": {
                 "schema": {
