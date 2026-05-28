@@ -202,6 +202,26 @@ export async function ingestFeaturedToSilver(args: {
     const uniqueByExternalId = Array.from(silverRowsByExternalId.values());
 
     if (uniqueByExternalId.length > 0) {
+      // ON CONFLICT DO UPDATE (not DO NOTHING) so legacy silver rows
+      // ingested under the prior pipeline (direct Featured fetch with
+      // a different `fingerprint(text, outlet)` hash) get RE-POINTED
+      // to the freshly-created Gold cluster on EQRS-driven ingest.
+      //
+      // Legacy state: silver rows exist with the same external_id
+      // (= pitchUrl) but their `quote_opportunity_id` references an
+      // OLD Gold cluster whose fingerprint hashed differently. The
+      // EQRS ingest creates new Gold clusters by today's fingerprint
+      // and would orphan them if silver stayed pinned to the old
+      // cluster — dashboards JOIN silver⋈gold so the new clusters
+      // become invisible.
+      //
+      // Repoint fields (quote_opportunity_id + fingerprint + outlet +
+      // deadline + pitchUrl + opportunityText) to the canonical
+      // post-EQRS values. PRESERVE org_id, external_id, provider,
+      // ingestion_channel, raw, featured_question_id, is_canonical,
+      // created_at, fetched_at on conflict — those are
+      // identity/provenance fields and must not be mutated by a
+      // re-ingest.
       const silverInserted = await db
         .insert(providerQuoteRequests)
         .values(
@@ -221,12 +241,21 @@ export async function ingestFeaturedToSilver(args: {
             orgId,
           }))
         )
-        .onConflictDoNothing({
+        .onConflictDoUpdate({
           target: [
             providerQuoteRequests.provider,
             providerQuoteRequests.ingestionChannel,
             providerQuoteRequests.externalId,
           ],
+          set: {
+            quoteOpportunityId: drizzleSql`excluded.quote_opportunity_id`,
+            fingerprint: drizzleSql`excluded.fingerprint`,
+            opportunityText: drizzleSql`excluded.opportunity_text`,
+            mediaOutlet: drizzleSql`excluded.media_outlet`,
+            deadline: drizzleSql`excluded.deadline`,
+            pitchUrl: drizzleSql`excluded.pitch_url`,
+            updatedAt: drizzleSql`now()`,
+          },
         })
         .returning({ id: providerQuoteRequests.id });
       newSilverCount = silverInserted.length;
