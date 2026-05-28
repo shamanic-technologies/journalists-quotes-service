@@ -41,6 +41,7 @@ If we ever scale-out to multiple replicas, in-process state for "has this org be
 
 - `POST /orgs/opportunities/next` — score-as-you-go write+read (above)
 - `POST /orgs/opportunities/ranked` — **pure-read** paginated list. SELECT-only over `quote_priorities ⋈ quote_opportunities`, filters expired deadlines, annotates with latest `pitchStatus`. Never scores. Body: `{ campaignId?, limit?, offset? }`. Used by HITL dashboard.
+- `GET /orgs/opportunities/stats` — brand-set scoped catalog metrics (silverPoolSize, scoredCount, eligibleCount, pitchedBlocking, expiredCount, bestEligibleScore). Pure read.
 - `POST /orgs/opportunities/:id/reply` — submit pitch. `:id` = Gold cluster id. Idempotent on `(quote_opportunity_id, brand_ids[])`.
 - `POST /webhooks/inbound-email` — HMAC-verified push from email-gateway-service (bronze ingest).
 - `POST /internal/process-inbound-emails` — drains pending inbound_emails, runs per-provider parser, writes silver + Gold cluster.
