@@ -18,16 +18,12 @@ export interface RagScoreResponse {
   results: RagScoreResult[];
 }
 
-interface UpstreamRagScoreResponse {
-  results: { id: string; score: number; whyRelevant?: string }[];
-}
-
 /**
- * Score documents against a multi-brand profile. chat-service
- * /orgs/rag/score is currently single-brand; we loop per brand and
- * aggregate scores per document by arithmetic mean. One quote_priorities
- * row is later persisted per (opportunity, brandSet) — exactly one score
- * per opportunity per multi-brand set.
+ * Score documents against a multi-brand tuple. The brandSet
+ * `brandIds: string[]` is sent as a single tuple to chat-service
+ * `POST /orgs/rag/score` — one score per document for the tuple, NOT
+ * a per-brand fan-out + mean. A co-brand tuple [A,B] is a distinct
+ * scoring target from solo [A].
  *
  * No fallback. Missing env vars / non-2xx response throw; the route's
  * error handler surfaces 502 upstream.
@@ -55,56 +51,19 @@ export async function ragScore(
   if (userId) headers["x-user-id"] = userId;
   if (runId) headers["x-run-id"] = runId;
 
-  const perBrand = await Promise.all(
-    request.brandIds.map(async (brandId) => {
-      const response = await fetch(`${chatServiceUrl}/orgs/rag/score`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          documents: request.documents,
-          brandId,
-        }),
-      });
-      if (!response.ok) {
-        const body = await response.text();
-        throw new Error(
-          `chat-service POST /orgs/rag/score failed (${response.status}): ${body}`
-        );
-      }
-      return (await response.json()) as UpstreamRagScoreResponse;
-    })
-  );
-
-  const acc = new Map<
-    string,
-    { sum: number; count: number; whyRelevant?: string }
-  >();
-  for (const r of perBrand) {
-    for (const item of r.results) {
-      const prev = acc.get(item.id);
-      if (prev) {
-        acc.set(item.id, {
-          sum: prev.sum + item.score,
-          count: prev.count + 1,
-          whyRelevant: prev.whyRelevant ?? item.whyRelevant,
-        });
-      } else {
-        acc.set(item.id, {
-          sum: item.score,
-          count: 1,
-          whyRelevant: item.whyRelevant,
-        });
-      }
-    }
+  const response = await fetch(`${chatServiceUrl}/orgs/rag/score`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      documents: request.documents,
+      brandIds: request.brandIds,
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `chat-service POST /orgs/rag/score failed (${response.status}): ${body}`
+    );
   }
-
-  const results: RagScoreResult[] = [];
-  for (const [id, agg] of acc) {
-    results.push({
-      id,
-      score: agg.count > 0 ? agg.sum / agg.count : 0,
-      whyRelevant: agg.whyRelevant,
-    });
-  }
-  return { results };
+  return (await response.json()) as RagScoreResponse;
 }

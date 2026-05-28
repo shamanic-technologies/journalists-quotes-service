@@ -13,6 +13,7 @@ export interface MockFeaturedState {
   forceSubmitError?: Error;
   profileIdSeq: number;
   loginCalls: number;
+  listOpportunitiesCalls: number;
 }
 
 export function createMockState(
@@ -24,6 +25,7 @@ export function createMockState(
     rateRemaining: 100,
     profileIdSeq: 1000,
     loginCalls: 0,
+    listOpportunitiesCalls: 0,
     ...overrides,
   };
 }
@@ -50,6 +52,7 @@ export class MockFeaturedClient extends FeaturedClient {
   }
 
   async listOpportunities() {
+    this.state.listOpportunitiesCalls++;
     return this.state.opportunities;
   }
 

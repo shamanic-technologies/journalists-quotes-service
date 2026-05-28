@@ -1,12 +1,9 @@
 import { Router } from "express";
 import { z } from "zod";
 import {
-  BLOCK_STATUSES,
   FeaturedListError,
   KeyServiceError,
-  fetchEligibleOpportunities,
-  ingestFeaturedToSilver,
-  rankOpportunities,
+  pickNextOpportunity,
   type BuildFeaturedClient,
 } from "../lib/opportunity-pipeline.js";
 import {
@@ -64,11 +61,15 @@ export function createOpportunitiesNextRouter(
     const userId = req.userId;
     const runId = req.runId;
 
+    let best;
     try {
-      await ingestFeaturedToSilver({
+      best = await pickNextOpportunity({
         orgId,
+        brandIds,
+        campaignId,
         userId,
         runId,
+        scoreThreshold: SCORE_THRESHOLD,
         callerPath: "/orgs/opportunities/next",
         buildClient,
       });
@@ -77,32 +78,10 @@ export function createOpportunitiesNextRouter(
         res.status(502).json({ error: err.message });
         return;
       }
-      res.status(500).json({ error: (err as Error).message });
-      return;
+      throw err;
     }
 
-    const eligible = await fetchEligibleOpportunities({
-      orgId,
-      brandIds,
-      campaignId,
-    });
-    const ranked = await rankOpportunities({
-      candidates: eligible,
-      orgId,
-      brandIds,
-      campaignId,
-      userId,
-      runId,
-      scoreThreshold: SCORE_THRESHOLD,
-    });
-
-    const available = ranked.find(
-      (r) =>
-        r.pitchStatus == null ||
-        !BLOCK_STATUSES.includes(r.pitchStatus)
-    );
-
-    if (!available) {
+    if (!best) {
       res.json({ found: false });
       return;
     }
@@ -110,21 +89,19 @@ export function createOpportunitiesNextRouter(
     res.json({
       found: true,
       opportunity: {
-        opportunityId: available.opportunityId,
-        provider: available.provider,
-        ingestionChannel: available.ingestionChannel,
-        featuredQuestionId: available.featuredQuestionId,
-        mediaOutlet: available.mediaOutlet,
-        journalistName: available.journalistName,
-        opportunityText: available.opportunityText,
-        deadline: available.deadline
-          ? available.deadline.toISOString()
-          : null,
-        pitchUrl: available.pitchUrl,
-        pitchEmail: available.pitchEmail,
-        category: available.category,
-        score: available.score,
-        whyRelevant: available.whyRelevant,
+        opportunityId: best.opportunityId,
+        provider: best.provider,
+        ingestionChannel: best.ingestionChannel,
+        featuredQuestionId: best.featuredQuestionId,
+        mediaOutlet: best.mediaOutlet,
+        journalistName: best.journalistName,
+        opportunityText: best.opportunityText,
+        deadline: best.deadline ? best.deadline.toISOString() : null,
+        pitchUrl: best.pitchUrl,
+        pitchEmail: best.pitchEmail,
+        category: best.category,
+        score: best.score,
+        whyRelevant: best.whyRelevant,
       },
       brandIds,
     });
