@@ -8,21 +8,14 @@ import {
   quotePitches,
 } from "../db/schema.js";
 import {
-  FeaturedClient,
-  FeaturedRateLimitError,
-  type FeaturedCredentials,
-  type FeaturedClientOptions,
-} from "../lib/featured-client.js";
-import { getFeaturedCredentials } from "../lib/key-service-client.js";
+  createEqrsClient,
+  type EqrsClient,
+} from "../lib/eqrs-client.js";
 import {
   authorizeCredit,
   BillingServiceError,
 } from "../lib/billing-client.js";
 import { addCosts } from "../lib/runs-client.js";
-import {
-  ensureFeaturedProfile,
-  type FetchLogoBytes,
-} from "../lib/featured-profile-bootstrap.js";
 import {
   sendTransactionalEmail,
   EmailGatewayError,
@@ -53,18 +46,7 @@ const BLOCK_STATUSES: Array<
 > = ["drafted", "submitted", "selected", "published", "not_selected"];
 
 export interface OpportunityReplyDeps {
-  buildClient?: (
-    credentials: FeaturedCredentials,
-    overrides?: Partial<FeaturedClientOptions>
-  ) => FeaturedClient;
-  fetchLogoBytes?: FetchLogoBytes;
-}
-
-function defaultBuildClient(
-  credentials: FeaturedCredentials,
-  overrides?: Partial<FeaturedClientOptions>
-): FeaturedClient {
-  return new FeaturedClient({ credentials, ...overrides });
+  eqrsClient?: EqrsClient;
 }
 
 function splitName(name: string | null): { first: string; last: string } {
@@ -82,8 +64,7 @@ export function createOpportunityReplyRouter(
   deps: OpportunityReplyDeps = {}
 ): Router {
   const router = Router();
-  const buildClient = deps.buildClient ?? defaultBuildClient;
-  const fetchLogoBytes = deps.fetchLogoBytes;
+  const eqrsClient = deps.eqrsClient ?? createEqrsClient();
 
   router.post("/orgs/opportunities/:id/reply", async (req, res) => {
     const paramsParsed = PARAMS_SCHEMA.safeParse(req.params);
@@ -188,8 +169,7 @@ export function createOpportunityReplyRouter(
         userId,
         runId,
         parentRunId,
-        buildClient,
-        fetchLogoBytes,
+        eqrsClient,
       });
       return;
     }
@@ -236,11 +216,7 @@ async function handleFeaturedReply(args: {
   userId?: string;
   runId?: string;
   parentRunId: string | null;
-  buildClient: (
-    credentials: FeaturedCredentials,
-    overrides?: Partial<FeaturedClientOptions>
-  ) => FeaturedClient;
-  fetchLogoBytes?: FetchLogoBytes;
+  eqrsClient: EqrsClient;
 }) {
   const {
     req,
@@ -254,8 +230,7 @@ async function handleFeaturedReply(args: {
     userId,
     runId,
     parentRunId,
-    buildClient,
-    fetchLogoBytes,
+    eqrsClient,
   } = args;
 
   if (representative.featuredQuestionId == null) {
@@ -267,99 +242,56 @@ async function handleFeaturedReply(args: {
   }
 
   // Featured profile is per-spokesperson; co-branded pitch uses the first
-  // brand (canonical-sorted) as the lead spokesperson identity.
+  // brand (canonical-sorted) as the lead spokesperson identity. EQRS
+  // resolves Featured credentials + bootstraps the profile internally.
   const leadBrandId = brandIds[0];
 
-  let credentials: FeaturedCredentials;
-  let keySource: "org" | "platform";
+  // Credit gate. Featured-pitch-submit is billed regardless of whether
+  // the underlying Featured creds came from the platform or the org;
+  // EQRS abstracts that away. We always gate.
   try {
-    const result = await getFeaturedCredentials({
-      callerMethod: "POST",
-      callerPath: "/orgs/opportunities/:id/reply",
+    const auth = await authorizeCredit({
+      items: [{ costName: FEATURED_PITCH_SUBMIT_COST, quantity: 1 }],
+      description: "featured pitch submit",
       orgId,
       userId,
       runId,
-    });
-    credentials = { username: result.username, password: result.password };
-    keySource = result.keySource;
-  } catch (err) {
-    const name = (err as Error).name;
-    const message = (err as Error).message;
-    if (name === "KeyServiceUnavailableError") {
-      res.status(502).json({ error: message });
-      return;
-    }
-    res.status(500).json({ error: message });
-    return;
-  }
-
-  if (keySource === "platform") {
-    try {
-      const auth = await authorizeCredit({
-        items: [{ costName: FEATURED_PITCH_SUBMIT_COST, quantity: 1 }],
-        description: "featured pitch submit",
-        orgId,
-        userId,
-        runId,
-        brandId: leadBrandId,
-        campaignId,
-        featureSlug: req.featureSlug,
-        workflowSlug: req.workflowSlug,
-      });
-      if (!auth.sufficient) {
-        res.status(402).json({
-          error: "insufficient credit for featured pitch submit",
-          balance_cents: auth.balance_cents,
-          required_cents: auth.required_cents,
-        });
-        return;
-      }
-    } catch (err) {
-      const status = err instanceof BillingServiceError ? 502 : 500;
-      res.status(status).json({ error: (err as Error).message });
-      return;
-    }
-  }
-
-  const client = buildClient(credentials);
-
-  let profile;
-  try {
-    profile = await ensureFeaturedProfile({
-      orgId,
       brandId: leadBrandId,
-      client,
-      fetchLogoBytes,
+      campaignId,
+      featureSlug: req.featureSlug,
+      workflowSlug: req.workflowSlug,
     });
-  } catch (err) {
-    res.status(502).json({ error: (err as Error).message });
-    return;
-  }
-
-  const rateState = client.rateLimitState();
-  if (rateState.remaining <= 0) {
-    res.json({ status: "rate_limited", retryAfter: rateState.retryAfter });
-    return;
-  }
-
-  try {
-    await client.submitAnswer({
-      answer: pitchContent,
-      featuredQuestionId: representative.featuredQuestionId,
-      profileId: profile.featuredProfileId,
-    });
-  } catch (err) {
-    if (err instanceof FeaturedRateLimitError) {
-      res.json({ status: "rate_limited", retryAfter: err.retryAfter });
+    if (!auth.sufficient) {
+      res.status(402).json({
+        error: "insufficient credit for featured pitch submit",
+        balance_cents: auth.balance_cents,
+        required_cents: auth.required_cents,
+      });
       return;
     }
+  } catch (err) {
+    const status = err instanceof BillingServiceError ? 502 : 500;
+    res.status(status).json({ error: (err as Error).message });
+    return;
+  }
+
+  let submitResult;
+  try {
+    submitResult = await eqrsClient.submitAnswer({
+      orgId,
+      userId,
+      runId,
+      brandId: leadBrandId,
+      featuredQuestionId: representative.featuredQuestionId,
+      answer: pitchContent,
+    });
+  } catch (err) {
     const [pitch] = await db
       .insert(quotePitches)
       .values({
         quoteRequestId: representative.id,
         quoteOpportunityId: opportunityId,
         featuredQuestionId: representative.featuredQuestionId,
-        featuredProfileId: profile.featuredProfileId,
         campaignId: campaignId ?? null,
         brandIds,
         draft: pitchContent,
@@ -372,7 +304,7 @@ async function handleFeaturedReply(args: {
         orgId,
       })
       .returning();
-    res.json({
+    res.status(502).json({
       status: "error",
       error: (err as Error).message,
       pitchId: pitch.id,
@@ -380,13 +312,49 @@ async function handleFeaturedReply(args: {
     return;
   }
 
+  if (submitResult.status === "rate_limited") {
+    res.json({
+      status: "rate_limited",
+      retryAfter: submitResult.retryAfter,
+    });
+    return;
+  }
+
+  if (submitResult.status === "error") {
+    const [pitch] = await db
+      .insert(quotePitches)
+      .values({
+        quoteRequestId: representative.id,
+        quoteOpportunityId: opportunityId,
+        featuredQuestionId: representative.featuredQuestionId,
+        campaignId: campaignId ?? null,
+        brandIds,
+        draft: pitchContent,
+        status: "error",
+        deliveryMethod: "featured_api",
+        deliveryTarget: representative.pitchUrl ?? null,
+        error: submitResult.error,
+        parentRunId,
+        runId: runId ?? null,
+        orgId,
+      })
+      .returning();
+    res.json({
+      status: "error",
+      error: submitResult.error,
+      pitchId: pitch.id,
+    });
+    return;
+  }
+
+  // submitResult.status === "submitted"
   const [pitch] = await db
     .insert(quotePitches)
     .values({
       quoteRequestId: representative.id,
       quoteOpportunityId: opportunityId,
       featuredQuestionId: representative.featuredQuestionId,
-      featuredProfileId: profile.featuredProfileId,
+      featuredProfileId: submitResult.featuredProfileId ?? null,
       campaignId: campaignId ?? null,
       brandIds,
       draft: pitchContent,
@@ -407,7 +375,7 @@ async function handleFeaturedReply(args: {
         [
           {
             costName: FEATURED_PITCH_SUBMIT_COST,
-            costSource: keySource,
+            costSource: "platform",
             quantity: 1,
             status: "actual",
           },

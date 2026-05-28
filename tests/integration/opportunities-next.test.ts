@@ -19,6 +19,7 @@ import {
 import { cleanTestData, closeDb } from "../helpers/test-db.js";
 import { db } from "../../src/db/index.js";
 import {
+  eqrsSyncState,
   providerQuoteRequests,
   quoteOpportunities,
   quotePitches,
@@ -26,22 +27,12 @@ import {
 } from "../../src/db/schema.js";
 import { eq } from "drizzle-orm";
 import {
-  buildMockClient,
-  createMockState,
-  type MockFeaturedState,
-} from "../helpers/mock-featured.js";
-import { _resetFeaturedClientState } from "../../src/lib/featured-client.js";
-import { _resetEmptyIngestSuspension } from "../../src/lib/opportunity-pipeline.js";
+  buildMockEqrsClient,
+  createMockEqrsState,
+  makeOpportunity,
+  type MockEqrsState,
+} from "../helpers/mock-eqrs.js";
 import { ragScore } from "../../src/lib/chat-client.js";
-
-vi.mock("../../src/lib/key-service-client.js", () => ({
-  getFeaturedCredentials: vi.fn(async () => ({
-    username: "mock-u",
-    password: "mock-p",
-    keySource: "platform" as const,
-  })),
-  KeyServiceUnavailableError: class extends Error {},
-}));
 
 vi.mock("../../src/lib/chat-client.js", () => ({
   ragScore: vi.fn(
@@ -59,18 +50,16 @@ vi.mock("../../src/lib/chat-client.js", () => ({
   ),
 }));
 
-let state: MockFeaturedState;
+let state: MockEqrsState;
 
 describe("POST /orgs/opportunities/next", () => {
   beforeAll(async () => {
     await cleanTestData();
   });
   beforeEach(async () => {
-    _resetFeaturedClientState();
-    _resetEmptyIngestSuspension();
     vi.mocked(ragScore).mockClear();
     await cleanTestData();
-    state = createMockState();
+    state = createMockEqrsState();
   });
   afterAll(async () => {
     await cleanTestData();
@@ -79,11 +68,11 @@ describe("POST /orgs/opportunities/next", () => {
 
   function app() {
     return createTestApp({
-      opportunitiesNextDeps: { buildClient: buildMockClient(state) },
+      opportunitiesNextDeps: { eqrsClient: buildMockEqrsClient(state) },
     });
   }
 
-  it("returns { found: false } when no eligible opportunities", async () => {
+  it("returns { found: false } when EQRS has no opportunities", async () => {
     const res = await request(app())
       .post("/orgs/opportunities/next")
       .set(AUTH_HEADERS)
@@ -105,24 +94,24 @@ describe("POST /orgs/opportunities/next", () => {
 
   it("returns the single highest-scored Gold opportunity with brandIds echoed", async () => {
     state.opportunities = [
-      {
+      makeOpportunity({
+        externalId: "1",
         featuredQuestionId: 1,
-        opportunity: "low signal cat memes",
+        opportunityText: "low signal cat memes",
         mediaOutlet: "BuzzFeed",
-        source: "featured",
-      },
-      {
+      }),
+      makeOpportunity({
+        externalId: "2",
         featuredQuestionId: 2,
-        opportunity: "high signal AI ethics",
+        opportunityText: "high signal AI ethics",
         mediaOutlet: "Forbes",
-        source: "featured",
-      },
-      {
+      }),
+      makeOpportunity({
+        externalId: "3",
         featuredQuestionId: 3,
-        opportunity: "mid signal SaaS pricing",
+        opportunityText: "mid signal SaaS pricing",
         mediaOutlet: "TechCrunch",
-        source: "featured",
-      },
+      }),
     ];
 
     const res = await request(app())
@@ -144,18 +133,18 @@ describe("POST /orgs/opportunities/next", () => {
 
   it("skips opportunities with a blocking pitch on the same brand-set", async () => {
     state.opportunities = [
-      {
+      makeOpportunity({
+        externalId: "11",
         featuredQuestionId: 11,
-        opportunity: "high signal top",
+        opportunityText: "high signal top",
         mediaOutlet: "Outlet 1",
-        source: "featured",
-      },
-      {
+      }),
+      makeOpportunity({
+        externalId: "12",
         featuredQuestionId: 12,
-        opportunity: "high signal second",
+        opportunityText: "high signal second",
         mediaOutlet: "Outlet 2",
-        source: "featured",
-      },
+      }),
     ];
 
     const a = app();
@@ -191,12 +180,12 @@ describe("POST /orgs/opportunities/next", () => {
 
   it("co-brand pitch [A,B] does NOT block solo /next for [A]", async () => {
     state.opportunities = [
-      {
+      makeOpportunity({
+        externalId: "21",
         featuredQuestionId: 21,
-        opportunity: "high signal solo target",
+        opportunityText: "high signal solo target",
         mediaOutlet: "Outlet S",
-        source: "featured",
-      },
+      }),
     ];
 
     const a = app();
@@ -229,13 +218,15 @@ describe("POST /orgs/opportunities/next", () => {
     expect(res.body.opportunity.featuredQuestionId).toBe(21);
   });
 
-  it("cold start: scores all unscored opportunities in a single multi-brand call (LIMIT 10)", async () => {
-    state.opportunities = Array.from({ length: 15 }, (_, i) => ({
-      featuredQuestionId: 500 + i,
-      opportunity: `high signal item ${i}`,
-      mediaOutlet: `Outlet ${i}`,
-      source: "featured",
-    }));
+  it("cold start: pulls all opportunities from EQRS in a single fetch + scores in a single multi-brand call (LIMIT 10)", async () => {
+    state.opportunities = Array.from({ length: 15 }, (_, i) =>
+      makeOpportunity({
+        externalId: String(500 + i),
+        featuredQuestionId: 500 + i,
+        opportunityText: `high signal item ${i}`,
+        mediaOutlet: `Outlet ${i}`,
+      })
+    );
 
     const res = await request(app())
       .post("/orgs/opportunities/next")
@@ -244,7 +235,8 @@ describe("POST /orgs/opportunities/next", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.found).toBe(true);
-    // Exactly one chat-service call, capped at UNSCORED_BATCH_SIZE = 10
+    expect(state.fetchCalls).toBe(1);
+    expect(state.fetchSinceLog[0]).toBeUndefined();
     expect(vi.mocked(ragScore)).toHaveBeenCalledTimes(1);
     const call = vi.mocked(ragScore).mock.calls[0][0] as {
       documents: unknown[];
@@ -259,23 +251,21 @@ describe("POST /orgs/opportunities/next", () => {
 
   it("stable state: zero scoring when every visible opportunity is already in quote_priorities", async () => {
     state.opportunities = [
-      {
+      makeOpportunity({
+        externalId: "901",
         featuredQuestionId: 901,
-        opportunity: "high signal stable",
+        opportunityText: "high signal stable",
         mediaOutlet: "Outlet X",
-        source: "featured",
-      },
+      }),
     ];
 
     const a = app();
-    // First call scores once.
     await request(a)
       .post("/orgs/opportunities/next")
       .set(AUTH_HEADERS)
       .send({});
     expect(vi.mocked(ragScore)).toHaveBeenCalledTimes(1);
 
-    // Second call: all scored → no chat-service call.
     vi.mocked(ragScore).mockClear();
     const res = await request(a)
       .post("/orgs/opportunities/next")
@@ -286,54 +276,121 @@ describe("POST /orgs/opportunities/next", () => {
     expect(vi.mocked(ragScore)).not.toHaveBeenCalled();
   });
 
-  it("partial batch: only un-scored opportunities are sent to chat-service", async () => {
-    state.opportunities = Array.from({ length: 4 }, (_, i) => ({
-      featuredQuestionId: 600 + i,
-      opportunity: `high signal partial ${i}`,
-      mediaOutlet: `Outlet ${i}`,
-      source: "featured",
-    }));
+  it("exhaustion-driven: EQRS fetched once on cold start, skipped while unscored remain, refetched after pool drains with a `since` cursor", async () => {
+    state.opportunities = Array.from({ length: 12 }, (_, i) =>
+      makeOpportunity({
+        externalId: String(9100 + i),
+        featuredQuestionId: 9100 + i,
+        opportunityText: `high signal exhaust ${i}`,
+        mediaOutlet: `Outlet ${i}`,
+      })
+    );
 
     const a = app();
-    // First call: ingests 4, scores 4.
+    // Call 1: silver empty → EQRS fetched → 12 ingested → score 10 of 12.
     await request(a)
       .post("/orgs/opportunities/next")
       .set(AUTH_HEADERS)
       .send({});
-    expect(vi.mocked(ragScore)).toHaveBeenCalledTimes(1);
-    expect(
-      (vi.mocked(ragScore).mock.calls[0][0] as { documents: unknown[] })
-        .documents
-    ).toHaveLength(4);
+    expect(state.fetchCalls).toBe(1);
 
-    // Featured later publishes 3 more opps.
-    state.opportunities.push(
-      ...Array.from({ length: 3 }, (_, i) => ({
-        featuredQuestionId: 700 + i,
-        opportunity: `high signal new ${i}`,
-        mediaOutlet: `Outlet new ${i}`,
-        source: "featured",
-      }))
-    );
+    // Call 2: 2 unscored remaining → NO EQRS fetch.
+    await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(state.fetchCalls).toBe(1);
+
+    // Call 3: pool drained → EQRS fetch fires, with `since` set to cursor.
+    await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(state.fetchCalls).toBe(2);
+    expect(state.fetchSinceLog[1]).toBeDefined();
+  });
+
+  it("EQRS cursor persists across calls in eqrs_sync_state", async () => {
+    state.opportunities = [
+      makeOpportunity({
+        externalId: "9200",
+        featuredQuestionId: 9200,
+        opportunityText: "high signal cursor",
+        mediaOutlet: "Outlet cursor",
+      }),
+    ];
+    const a = app();
+    await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+
+    const [row] = await db
+      .select()
+      .from(eqrsSyncState)
+      .where(eq(eqrsSyncState.orgId, TEST_ORG_A));
+    expect(row).toBeDefined();
+    expect(row.lastSyncedAt).not.toBeNull();
+  });
+
+  it("does NOT re-score across calls — quote_priorities rows reused", async () => {
+    state.opportunities = [
+      makeOpportunity({
+        externalId: "9300",
+        featuredQuestionId: 9300,
+        opportunityText: "high signal reuse",
+        mediaOutlet: "Outlet reuse",
+      }),
+    ];
+
+    const a = app();
+    const first = await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(first.body.found).toBe(true);
+    const firstScoredAt = (
+      await db
+        .select({ scoredAt: quotePriorities.scoredAt })
+        .from(quotePriorities)
+    )[0].scoredAt;
+
+    await new Promise((r) => setTimeout(r, 50));
     vi.mocked(ragScore).mockClear();
 
-    // Second call: silver pool exhausted → re-ingest Featured → 3 new
-    // silver rows → score only the 3 new ones (existing 4 are skipped
-    // by the unscored anti-join).
-    await request(a)
+    const second = await request(a)
       .post("/orgs/opportunities/next")
       .set(AUTH_HEADERS)
       .send({});
+    expect(second.body.found).toBe(true);
+    expect(vi.mocked(ragScore)).not.toHaveBeenCalled();
+    const secondScoredAt = (
+      await db
+        .select({ scoredAt: quotePriorities.scoredAt })
+        .from(quotePriorities)
+    )[0].scoredAt;
+    expect(secondScoredAt.getTime()).toBe(firstScoredAt.getTime());
+  });
+
+  it("found:false when only available opportunity is below SCORE_THRESHOLD", async () => {
+    state.opportunities = [
+      makeOpportunity({
+        externalId: "8001",
+        featuredQuestionId: 8001,
+        opportunityText: "low signal noise",
+        mediaOutlet: "Outlet noise",
+      }),
+    ];
+    const res = await request(app())
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(res.body).toEqual({ found: false });
     expect(vi.mocked(ragScore)).toHaveBeenCalledTimes(1);
-    expect(
-      (vi.mocked(ragScore).mock.calls[0][0] as { documents: unknown[] })
-        .documents
-    ).toHaveLength(3);
   });
 
   it("filters out opportunities with a past canonical_deadline", async () => {
     const a = app();
-    // Seed manually: silver + Gold with a past deadline.
     const pastDeadline = new Date(Date.now() - 24 * 3600_000);
     const [opp] = await db
       .insert(quoteOpportunities)
@@ -362,144 +419,7 @@ describe("POST /orgs/opportunities/next", () => {
       .post("/orgs/opportunities/next")
       .set(AUTH_HEADERS)
       .send({});
-
-    // Expired opp is filtered before scoring AND from the best-pick → found:false.
     expect(res.body).toEqual({ found: false });
     expect(vi.mocked(ragScore)).not.toHaveBeenCalled();
-  });
-
-  it("found:false when the only available opportunity is below SCORE_THRESHOLD", async () => {
-    state.opportunities = [
-      {
-        featuredQuestionId: 8001,
-        opportunity: "low signal noise",
-        mediaOutlet: "Outlet noise",
-        source: "featured",
-      },
-    ];
-    const res = await request(app())
-      .post("/orgs/opportunities/next")
-      .set(AUTH_HEADERS)
-      .send({});
-    expect(res.body).toEqual({ found: false });
-    // Was scored (mocked low=0.2) but filtered below 0.5 threshold.
-    expect(vi.mocked(ragScore)).toHaveBeenCalledTimes(1);
-  });
-
-  it("exhaustion-driven: Featured fetched on first call (cold pool), skipped while unscored remain, refetched after pool drains", async () => {
-    state.opportunities = Array.from({ length: 12 }, (_, i) => ({
-      featuredQuestionId: 9100 + i,
-      opportunity: `high signal exhaust ${i}`,
-      mediaOutlet: `Outlet ${i}`,
-      source: "featured",
-    }));
-
-    const a = app();
-    // Call 1: silver empty → ingest fires → score 10 of 12.
-    await request(a)
-      .post("/orgs/opportunities/next")
-      .set(AUTH_HEADERS)
-      .send({});
-    expect(state.listOpportunitiesCalls).toBe(1);
-
-    // Call 2: 2 unscored still in silver → NO ingest (avoid wasting
-    // Featured budget while consumer hasn't drained what's already
-    // landed).
-    await request(a)
-      .post("/orgs/opportunities/next")
-      .set(AUTH_HEADERS)
-      .send({});
-    expect(state.listOpportunitiesCalls).toBe(1);
-
-    // Call 3: pool now fully scored → ingest fires. Featured publishes
-    // nothing new; onConflictDoNothing makes the upsert a no-op.
-    await request(a)
-      .post("/orgs/opportunities/next")
-      .set(AUTH_HEADERS)
-      .send({});
-    expect(state.listOpportunitiesCalls).toBe(2);
-  });
-
-  it("exhaustion refetch surfaces newly-published Featured opportunities", async () => {
-    state.opportunities = [
-      {
-        featuredQuestionId: 9300,
-        opportunity: "high signal first",
-        mediaOutlet: "Outlet first",
-        source: "featured",
-      },
-    ];
-    const a = app();
-
-    // Cold start: ingest + score the single available opp.
-    await request(a)
-      .post("/orgs/opportunities/next")
-      .set(AUTH_HEADERS)
-      .send({});
-    expect(state.listOpportunitiesCalls).toBe(1);
-    expect(vi.mocked(ragScore)).toHaveBeenCalledTimes(1);
-
-    // Featured publishes a new opp later.
-    state.opportunities.push({
-      featuredQuestionId: 9301,
-      opportunity: "high signal second",
-      mediaOutlet: "Outlet second",
-      source: "featured",
-    });
-    vi.mocked(ragScore).mockClear();
-
-    // Next call: pool fully scored for this brand-set → refetch fires →
-    // new opp lands in silver → scored → returned.
-    const res = await request(a)
-      .post("/orgs/opportunities/next")
-      .set(AUTH_HEADERS)
-      .send({});
-    expect(state.listOpportunitiesCalls).toBe(2);
-    expect(vi.mocked(ragScore)).toHaveBeenCalledTimes(1);
-    expect(
-      (vi.mocked(ragScore).mock.calls[0][0] as { documents: unknown[] })
-        .documents
-    ).toHaveLength(1);
-    expect(res.body.found).toBe(true);
-  });
-
-  it("does NOT re-score across calls — quote_priorities rows reused", async () => {
-    state.opportunities = [
-      {
-        featuredQuestionId: 9200,
-        opportunity: "high signal reuse",
-        mediaOutlet: "Outlet reuse",
-        source: "featured",
-      },
-    ];
-
-    const a = app();
-    const first = await request(a)
-      .post("/orgs/opportunities/next")
-      .set(AUTH_HEADERS)
-      .send({});
-    expect(first.body.found).toBe(true);
-    const firstScoredAt = (
-      await db
-        .select({ scoredAt: quotePriorities.scoredAt })
-        .from(quotePriorities)
-    )[0].scoredAt;
-
-    // Wait a tick so any re-score would produce a different scoredAt.
-    await new Promise((r) => setTimeout(r, 50));
-    vi.mocked(ragScore).mockClear();
-
-    const second = await request(a)
-      .post("/orgs/opportunities/next")
-      .set(AUTH_HEADERS)
-      .send({});
-    expect(second.body.found).toBe(true);
-    expect(vi.mocked(ragScore)).not.toHaveBeenCalled();
-    const secondScoredAt = (
-      await db
-        .select({ scoredAt: quotePriorities.scoredAt })
-        .from(quotePriorities)
-    )[0].scoredAt;
-    expect(secondScoredAt.getTime()).toBe(firstScoredAt.getTime());
   });
 });
