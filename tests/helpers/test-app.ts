@@ -7,10 +7,6 @@ import {
   type OpportunitiesNextDeps,
 } from "../../src/routes/opportunities-next.js";
 import {
-  createOpportunitiesRankedRouter,
-  type OpportunitiesRankedDeps,
-} from "../../src/routes/opportunities-ranked.js";
-import {
   createOpportunityReplyRouter,
   type OpportunityReplyDeps,
 } from "../../src/routes/opportunity-reply.js";
@@ -27,7 +23,6 @@ import { hmacVerify } from "../../src/middleware/hmac-verify.js";
 
 export interface TestAppDeps {
   opportunitiesNextDeps?: OpportunitiesNextDeps;
-  opportunitiesRankedDeps?: OpportunitiesRankedDeps;
   opportunityReplyDeps?: OpportunityReplyDeps;
   skipHmacVerify?: boolean;
 }
@@ -58,7 +53,6 @@ export function createTestApp(deps: TestAppDeps = {}) {
 
   app.use("/orgs", apiKeyAuth, requireOrgId, withRunTracking);
   app.use(createOpportunitiesNextRouter(deps.opportunitiesNextDeps));
-  app.use(createOpportunitiesRankedRouter(deps.opportunitiesRankedDeps));
   app.use(createOpportunityReplyRouter(deps.opportunityReplyDeps));
   app.use(quoteRequestsRoutes);
   app.use(quotePitchesRoutes);
