@@ -16,7 +16,6 @@ import { getFeaturedCredentials } from "./key-service-client.js";
 import { ragScore } from "./chat-client.js";
 import { SHARED_EMAIL_ORG_ID } from "./inbound/process.js";
 import { computeFingerprint } from "./cluster/fingerprint.js";
-import { attachOrCreateCluster } from "./cluster/attach.js";
 
 export class KeyServiceError extends Error {
   constructor(message: string) {
@@ -171,37 +170,80 @@ export async function ingestFeaturedToSilver(args: {
   );
 
   let newSilverCount = 0;
-  for (const o of insertableOpps) {
-    const text = o.opportunity!;
-    const outlet = o.mediaOutlet ?? null;
-    const fingerprint = computeFingerprint(text, outlet);
-    const cluster = await attachOrCreateCluster({
-      fingerprint,
-      canonicalText: text,
-      canonicalOutlet: outlet,
-      canonicalDeadline: safeParseDate(o.deadline),
+  if (insertableOpps.length > 0) {
+    // Bulk path: 3 queries total regardless of catalog size (was N × 2-3
+    // sequential roundtrips per Featured opp, which busted the workflow
+    // Bun fetch budget on saturated catalogs of ~200+).
+    const prepared = insertableOpps.map((o) => {
+      const text = o.opportunity!;
+      const outlet = o.mediaOutlet ?? null;
+      const fingerprint = computeFingerprint(text, outlet);
+      return {
+        o,
+        text,
+        outlet,
+        fingerprint,
+        deadline: safeParseDate(o.deadline),
+        externalId: featuredExternalId(o),
+      };
     });
 
-    const inserted = await db
-      .insert(providerQuoteRequests)
-      .values({
-        provider: "featured",
-        ingestionChannel: "api" as const,
-        externalId: featuredExternalId(o),
-        featuredQuestionId:
-          typeof o.featuredQuestionId === "number"
-            ? o.featuredQuestionId
-            : null,
-        mediaOutlet: outlet,
-        opportunityText: text,
-        pitchUrl: o.pitchUrl ?? null,
-        deadline: safeParseDate(o.deadline),
-        raw: o,
-        quoteOpportunityId: cluster.id,
-        isCanonical: cluster.created,
-        fingerprint,
-        orgId,
+    // 1. Bulk upsert Gold clusters by fingerprint (touch last_seen_at).
+    await db
+      .insert(quoteOpportunities)
+      .values(
+        prepared.map((r) => ({
+          fingerprint: r.fingerprint,
+          canonicalText: r.text,
+          canonicalOutlet: r.outlet,
+          canonicalDeadline: r.deadline,
+          clusterMethod: "fingerprint" as const,
+        }))
+      )
+      .onConflictDoUpdate({
+        target: quoteOpportunities.fingerprint,
+        set: { lastSeenAt: drizzleSql`now()` },
+      });
+
+    // 2. Resolve cluster ids by fingerprint for FK on silver inserts.
+    const fingerprints = prepared.map((r) => r.fingerprint);
+    const clusterRows = await db
+      .select({
+        id: quoteOpportunities.id,
+        fingerprint: quoteOpportunities.fingerprint,
       })
+      .from(quoteOpportunities)
+      .where(inArray(quoteOpportunities.fingerprint, fingerprints));
+    const clusterIdByFingerprint = new Map(
+      clusterRows.map((c) => [c.fingerprint, c.id])
+    );
+
+    // 3. Bulk insert silver rows with ON CONFLICT DO NOTHING; .returning()
+    //    yields only freshly-inserted rows, which is our new-silver count.
+    const silverInserted = await db
+      .insert(providerQuoteRequests)
+      .values(
+        prepared
+          .filter((r) => clusterIdByFingerprint.has(r.fingerprint))
+          .map((r) => ({
+            provider: "featured",
+            ingestionChannel: "api" as const,
+            externalId: r.externalId,
+            featuredQuestionId:
+              typeof r.o.featuredQuestionId === "number"
+                ? r.o.featuredQuestionId
+                : null,
+            mediaOutlet: r.outlet,
+            opportunityText: r.text,
+            pitchUrl: r.o.pitchUrl ?? null,
+            deadline: r.deadline,
+            raw: r.o,
+            quoteOpportunityId: clusterIdByFingerprint.get(r.fingerprint)!,
+            isCanonical: false,
+            fingerprint: r.fingerprint,
+            orgId,
+          }))
+      )
       .onConflictDoNothing({
         target: [
           providerQuoteRequests.provider,
@@ -210,7 +252,7 @@ export async function ingestFeaturedToSilver(args: {
         ],
       })
       .returning({ id: providerQuoteRequests.id });
-    if (inserted.length > 0) newSilverCount++;
+    newSilverCount = silverInserted.length;
   }
 
   console.log(
