@@ -97,15 +97,30 @@ function featuredExternalId(o: FeaturedOpportunity): string {
   return computeFingerprint(o.opportunity ?? "", o.mediaOutlet);
 }
 
+// Negative cache: when a refetch ingested ZERO new silver rows for an
+// org, suspend further Featured `/opportunities-list` fetches for this
+// org for EMPTY_INGEST_SUSPEND_MS. Lets a saturated catalog stop hitting
+// Featured every /next tick while still allowing growth on the next
+// fetch after the suspension window. NOT a generic TTL — only fires
+// after an explicit empty-result refetch.
+const EMPTY_INGEST_SUSPEND_MS = 60 * 1000;
+const emptyIngestSuspension = new Map<string, number>();
+
+export function _resetEmptyIngestSuspension() {
+  emptyIngestSuspension.clear();
+}
+
 /**
  * Fetch live Featured opportunities and write through to silver +
  * cluster into Gold via fingerprint. Idempotent on
  * (provider, ingestion_channel, external_id) — concurrent / repeated
  * calls deduplicate via the natural-key unique constraint.
  *
- * No time-based throttle here. Featured is only re-fetched by callers
- * when their downstream silver pool is exhausted (see
- * `pickNextOpportunity` for the exhaustion-driven trigger).
+ * Negative-cache shortcut: when a prior call ingested 0 new silvers
+ * for this org, the next call within EMPTY_INGEST_SUSPEND_MS skips
+ * the Featured HTTP fetch entirely (Featured has nothing new for us;
+ * hitting it every /next tick is wasteful). The suspension is cleared
+ * the first time a fetch DOES bring in new silvers.
  */
 export async function ingestFeaturedToSilver(args: {
   orgId: string;
@@ -115,6 +130,14 @@ export async function ingestFeaturedToSilver(args: {
   buildClient: BuildFeaturedClient;
 }): Promise<void> {
   const { orgId, userId, runId, callerPath, buildClient } = args;
+
+  const suspendedUntil = emptyIngestSuspension.get(orgId);
+  if (suspendedUntil != null && Date.now() < suspendedUntil) {
+    console.log(
+      `[journalists-quotes-service] /next stage=ingest-skip-empty-suspension orgId=${orgId} resumesInMs=${suspendedUntil - Date.now()}`
+    );
+    return;
+  }
 
   let credentials: FeaturedCredentials;
   try {
@@ -147,6 +170,7 @@ export async function ingestFeaturedToSilver(args: {
     (o) => typeof o.opportunity === "string" && o.opportunity.length > 0
   );
 
+  let newSilverCount = 0;
   for (const o of insertableOpps) {
     const text = o.opportunity!;
     const outlet = o.mediaOutlet ?? null;
@@ -158,7 +182,7 @@ export async function ingestFeaturedToSilver(args: {
       canonicalDeadline: safeParseDate(o.deadline),
     });
 
-    await db
+    const inserted = await db
       .insert(providerQuoteRequests)
       .values({
         provider: "featured",
@@ -184,7 +208,19 @@ export async function ingestFeaturedToSilver(args: {
           providerQuoteRequests.ingestionChannel,
           providerQuoteRequests.externalId,
         ],
-      });
+      })
+      .returning({ id: providerQuoteRequests.id });
+    if (inserted.length > 0) newSilverCount++;
+  }
+
+  console.log(
+    `[journalists-quotes-service] /next stage=ingest-complete orgId=${orgId} featuredReturned=${insertableOpps.length} newSilverCount=${newSilverCount}`
+  );
+
+  if (newSilverCount === 0) {
+    emptyIngestSuspension.set(orgId, Date.now() + EMPTY_INGEST_SUSPEND_MS);
+  } else {
+    emptyIngestSuspension.delete(orgId);
   }
 }
 
