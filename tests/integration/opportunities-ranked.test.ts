@@ -1,0 +1,391 @@
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  beforeEach,
+  afterAll,
+} from "vitest";
+import request from "supertest";
+import {
+  createTestApp,
+  AUTH_HEADERS,
+  TEST_BRAND,
+  TEST_BRAND_B,
+  TEST_CAMPAIGN_A,
+  TEST_CAMPAIGN_B,
+  TEST_ORG_A,
+} from "../helpers/test-app.js";
+import { cleanTestData, closeDb } from "../helpers/test-db.js";
+import { db } from "../../src/db/index.js";
+import {
+  providerQuoteRequests,
+  quoteOpportunities,
+  quotePitches,
+  quotePriorities,
+} from "../../src/db/schema.js";
+import { eq } from "drizzle-orm";
+
+async function seedScoredOpportunity(args: {
+  fingerprint: string;
+  text: string;
+  outlet?: string | null;
+  externalId: string;
+  featuredQuestionId?: number;
+  brandIds: string[];
+  score: number;
+  deadline?: Date | null;
+  whyRelevant?: string;
+}): Promise<string> {
+  const [opp] = await db
+    .insert(quoteOpportunities)
+    .values({
+      fingerprint: args.fingerprint,
+      canonicalText: args.text,
+      canonicalOutlet: args.outlet ?? null,
+      canonicalDeadline: args.deadline ?? null,
+    })
+    .returning();
+  await db.insert(providerQuoteRequests).values({
+    provider: "featured",
+    ingestionChannel: "api",
+    externalId: args.externalId,
+    featuredQuestionId: args.featuredQuestionId ?? null,
+    mediaOutlet: args.outlet ?? null,
+    opportunityText: args.text,
+    deadline: args.deadline ?? null,
+    quoteOpportunityId: opp.id,
+    isCanonical: true,
+    fingerprint: args.fingerprint,
+    orgId: TEST_ORG_A,
+  });
+  await db.insert(quotePriorities).values({
+    quoteOpportunityId: opp.id,
+    brandIds: args.brandIds,
+    campaignId: null,
+    score: args.score.toFixed(2),
+    whyRelevant: args.whyRelevant ?? "seeded",
+    orgId: TEST_ORG_A,
+  });
+  return opp.id;
+}
+
+describe("POST /orgs/opportunities/ranked (pure-read)", () => {
+  beforeAll(async () => {
+    await cleanTestData();
+  });
+  beforeEach(async () => {
+    await cleanTestData();
+  });
+  afterAll(async () => {
+    await cleanTestData();
+    await closeDb();
+  });
+
+  function app() {
+    return createTestApp({});
+  }
+
+  it("returns empty list with total 0 when no quote_priorities rows exist", async () => {
+    const res = await request(app())
+      .post("/orgs/opportunities/ranked")
+      .set(AUTH_HEADERS)
+      .send({ campaignId: TEST_CAMPAIGN_A });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      status: "ok",
+      opportunities: [],
+      total: 0,
+      brandIds: [TEST_BRAND],
+    });
+  });
+
+  it("rejects when x-brand-id header is missing", async () => {
+    const headers = { ...AUTH_HEADERS } as Record<string, string>;
+    delete headers["x-brand-id"];
+    const res = await request(app())
+      .post("/orgs/opportunities/ranked")
+      .set(headers)
+      .send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/x-brand-id/);
+  });
+
+  it("rejects limit > 50 with 400", async () => {
+    const res = await request(app())
+      .post("/orgs/opportunities/ranked")
+      .set(AUTH_HEADERS)
+      .send({ limit: 100 });
+    expect(res.status).toBe(400);
+  });
+
+  it("sorts results by score desc and returns Gold cluster IDs", async () => {
+    const high = await seedScoredOpportunity({
+      fingerprint: "fp-high",
+      text: "high signal AI ethics",
+      outlet: "Forbes",
+      externalId: "h-1",
+      featuredQuestionId: 1001,
+      brandIds: [TEST_BRAND],
+      score: 0.95,
+    });
+    const mid = await seedScoredOpportunity({
+      fingerprint: "fp-mid",
+      text: "mid signal SaaS pricing",
+      outlet: "TechCrunch",
+      externalId: "m-1",
+      featuredQuestionId: 1002,
+      brandIds: [TEST_BRAND],
+      score: 0.7,
+    });
+    // Below threshold — must be filtered.
+    await seedScoredOpportunity({
+      fingerprint: "fp-low",
+      text: "low",
+      outlet: "BuzzFeed",
+      externalId: "l-1",
+      featuredQuestionId: 1003,
+      brandIds: [TEST_BRAND],
+      score: 0.2,
+    });
+
+    const res = await request(app())
+      .post("/orgs/opportunities/ranked")
+      .set(AUTH_HEADERS)
+      .send({ campaignId: TEST_CAMPAIGN_A });
+
+    expect(res.status).toBe(200);
+    expect(res.body.opportunities).toHaveLength(2);
+    expect(res.body.opportunities[0].opportunityId).toBe(high);
+    expect(res.body.opportunities[0].score).toBeCloseTo(0.95);
+    expect(res.body.opportunities[0].pitchStatus).toBeNull();
+    expect(res.body.opportunities[1].opportunityId).toBe(mid);
+    expect(res.body.opportunities[1].score).toBeCloseTo(0.7);
+    expect(res.body.total).toBe(2);
+  });
+
+  it("honors limit + offset for paging", async () => {
+    for (let i = 0; i < 4; i++) {
+      await seedScoredOpportunity({
+        fingerprint: `fp-${i}`,
+        text: `high signal item ${i}`,
+        outlet: `Outlet ${i}`,
+        externalId: `e-${i}`,
+        featuredQuestionId: 2000 + i,
+        brandIds: [TEST_BRAND],
+        score: 0.9 - i * 0.01,
+      });
+    }
+
+    const a = app();
+    const first = await request(a)
+      .post("/orgs/opportunities/ranked")
+      .set(AUTH_HEADERS)
+      .send({ limit: 2, offset: 0 });
+    expect(first.body.opportunities).toHaveLength(2);
+    expect(first.body.total).toBe(4);
+
+    const second = await request(a)
+      .post("/orgs/opportunities/ranked")
+      .set(AUTH_HEADERS)
+      .send({ limit: 2, offset: 2 });
+    expect(second.body.opportunities).toHaveLength(2);
+    expect(second.body.total).toBe(4);
+
+    const ids = new Set([
+      ...first.body.opportunities.map(
+        (o: { opportunityId: string }) => o.opportunityId
+      ),
+      ...second.body.opportunities.map(
+        (o: { opportunityId: string }) => o.opportunityId
+      ),
+    ]);
+    expect(ids.size).toBe(4);
+  });
+
+  it("annotates pitchStatus from latest pitch on same brand-set within campaign scope", async () => {
+    const oppA = await seedScoredOpportunity({
+      fingerprint: "fp-a",
+      text: "high signal A",
+      externalId: "p-a",
+      featuredQuestionId: 9001,
+      brandIds: [TEST_BRAND],
+      score: 0.9,
+    });
+    const oppB = await seedScoredOpportunity({
+      fingerprint: "fp-b",
+      text: "high signal B",
+      externalId: "p-b",
+      featuredQuestionId: 9002,
+      brandIds: [TEST_BRAND],
+      score: 0.8,
+    });
+    const silverA = (
+      await db
+        .select()
+        .from(providerQuoteRequests)
+        .where(eq(providerQuoteRequests.externalId, "p-a"))
+    )[0];
+    await db.insert(quotePitches).values({
+      quoteRequestId: silverA.id,
+      quoteOpportunityId: oppA,
+      campaignId: TEST_CAMPAIGN_A,
+      brandIds: [TEST_BRAND],
+      status: "submitted",
+      deliveryMethod: "featured_api",
+      orgId: TEST_ORG_A,
+    });
+
+    const res = await request(app())
+      .post("/orgs/opportunities/ranked")
+      .set(AUTH_HEADERS)
+      .send({ campaignId: TEST_CAMPAIGN_A });
+    const byOpp: Record<string, { pitchStatus: string | null }> = {};
+    for (const o of res.body.opportunities) {
+      byOpp[o.opportunityId] = { pitchStatus: o.pitchStatus };
+    }
+    expect(byOpp[oppA].pitchStatus).toBe("submitted");
+    expect(byOpp[oppB].pitchStatus).toBeNull();
+  });
+
+  it("isolates pitchStatus to the requested campaign", async () => {
+    const opp = await seedScoredOpportunity({
+      fingerprint: "fp-iso",
+      text: "high signal iso",
+      externalId: "p-iso",
+      featuredQuestionId: 9100,
+      brandIds: [TEST_BRAND],
+      score: 0.9,
+    });
+    const silver = (
+      await db
+        .select()
+        .from(providerQuoteRequests)
+        .where(eq(providerQuoteRequests.externalId, "p-iso"))
+    )[0];
+    await db.insert(quotePitches).values({
+      quoteRequestId: silver.id,
+      quoteOpportunityId: opp,
+      campaignId: TEST_CAMPAIGN_A,
+      brandIds: [TEST_BRAND],
+      status: "submitted",
+      deliveryMethod: "featured_api",
+      orgId: TEST_ORG_A,
+    });
+
+    // Same opp, different campaign — pitchStatus should be null.
+    const res = await request(app())
+      .post("/orgs/opportunities/ranked")
+      .set(AUTH_HEADERS)
+      .send({ campaignId: TEST_CAMPAIGN_B });
+    expect(res.body.opportunities).toHaveLength(1);
+    expect(res.body.opportunities[0].pitchStatus).toBeNull();
+  });
+
+  it("brand-only call surfaces pitchStatus across all campaigns of the brand-set", async () => {
+    const opp = await seedScoredOpportunity({
+      fingerprint: "fp-brand",
+      text: "high signal brand",
+      externalId: "p-brand",
+      featuredQuestionId: 9200,
+      brandIds: [TEST_BRAND],
+      score: 0.9,
+    });
+    const silver = (
+      await db
+        .select()
+        .from(providerQuoteRequests)
+        .where(eq(providerQuoteRequests.externalId, "p-brand"))
+    )[0];
+    await db.insert(quotePitches).values({
+      quoteRequestId: silver.id,
+      quoteOpportunityId: opp,
+      campaignId: TEST_CAMPAIGN_A,
+      brandIds: [TEST_BRAND],
+      status: "submitted",
+      deliveryMethod: "featured_api",
+      orgId: TEST_ORG_A,
+    });
+
+    const res = await request(app())
+      .post("/orgs/opportunities/ranked")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(res.body.opportunities).toHaveLength(1);
+    expect(res.body.opportunities[0].pitchStatus).toBe("submitted");
+  });
+
+  it("filters out opportunities with a past canonical_deadline", async () => {
+    const pastDeadline = new Date(Date.now() - 24 * 3600_000);
+    await seedScoredOpportunity({
+      fingerprint: "fp-expired",
+      text: "high signal expired",
+      externalId: "p-exp",
+      featuredQuestionId: 9300,
+      brandIds: [TEST_BRAND],
+      score: 0.9,
+      deadline: pastDeadline,
+    });
+    const res = await request(app())
+      .post("/orgs/opportunities/ranked")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(res.body.opportunities).toHaveLength(0);
+    expect(res.body.total).toBe(0);
+  });
+
+  it("multi-brand x-brand-id CSV: brandIds canonicalized + filters to exact tuple", async () => {
+    const tupleAB = [TEST_BRAND, TEST_BRAND_B].sort();
+    await seedScoredOpportunity({
+      fingerprint: "fp-ab",
+      text: "high signal AB tuple",
+      externalId: "p-ab",
+      featuredQuestionId: 9400,
+      brandIds: tupleAB,
+      score: 0.9,
+    });
+    // Solo-[A] row for same opp must NOT match the [A,B] query.
+    await seedScoredOpportunity({
+      fingerprint: "fp-a-solo",
+      text: "high signal solo A",
+      externalId: "p-a-solo",
+      featuredQuestionId: 9401,
+      brandIds: [TEST_BRAND],
+      score: 0.95,
+    });
+
+    const headers = { ...AUTH_HEADERS } as Record<string, string>;
+    headers["x-brand-id"] = `${TEST_BRAND_B},${TEST_BRAND}`;
+
+    const res = await request(app())
+      .post("/orgs/opportunities/ranked")
+      .set(headers)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.brandIds).toEqual(tupleAB);
+    expect(res.body.opportunities).toHaveLength(1);
+    expect(res.body.opportunities[0].featuredQuestionId).toBe(9400);
+  });
+
+  it("does NOT mutate quote_priorities or score on read", async () => {
+    await seedScoredOpportunity({
+      fingerprint: "fp-mut",
+      text: "high signal mut",
+      externalId: "p-mut",
+      featuredQuestionId: 9500,
+      brandIds: [TEST_BRAND],
+      score: 0.9,
+    });
+    const beforeRows = await db.select().from(quotePriorities);
+    const beforeScoredAt = beforeRows[0].scoredAt;
+
+    await request(app())
+      .post("/orgs/opportunities/ranked")
+      .set(AUTH_HEADERS)
+      .send({});
+
+    const afterRows = await db.select().from(quotePriorities);
+    expect(afterRows).toHaveLength(1);
+    expect(afterRows[0].scoredAt.getTime()).toBe(beforeScoredAt.getTime());
+  });
+});
