@@ -97,22 +97,15 @@ function featuredExternalId(o: FeaturedOpportunity): string {
   return computeFingerprint(o.opportunity ?? "", o.mediaOutlet);
 }
 
-// In-memory TTL cache: skip Featured `/opportunities-list` if it was
-// fetched + flushed to silver for this org within the window. Single
-// Railway replica today; if scaling out, replace with DB column.
-const FEATURED_INGEST_TTL_MS = 5 * 60 * 1000;
-const featuredIngestCache = new Map<string, number>();
-
-export function _resetFeaturedIngestCache() {
-  featuredIngestCache.clear();
-}
-
 /**
  * Fetch live Featured opportunities and write through to silver +
  * cluster into Gold via fingerprint. Idempotent on
- * (provider, ingestion_channel, external_id). Skips the upstream
- * Featured fetch when the same org was ingested within
- * FEATURED_INGEST_TTL_MS.
+ * (provider, ingestion_channel, external_id) — concurrent / repeated
+ * calls deduplicate via the natural-key unique constraint.
+ *
+ * No time-based throttle here. Featured is only re-fetched by callers
+ * when their downstream silver pool is exhausted (see
+ * `pickNextOpportunity` for the exhaustion-driven trigger).
  */
 export async function ingestFeaturedToSilver(args: {
   orgId: string;
@@ -122,11 +115,6 @@ export async function ingestFeaturedToSilver(args: {
   buildClient: BuildFeaturedClient;
 }): Promise<void> {
   const { orgId, userId, runId, callerPath, buildClient } = args;
-
-  const lastFetched = featuredIngestCache.get(orgId);
-  if (lastFetched != null && Date.now() - lastFetched < FEATURED_INGEST_TTL_MS) {
-    return;
-  }
 
   let credentials: FeaturedCredentials;
   try {
@@ -198,8 +186,6 @@ export async function ingestFeaturedToSilver(args: {
         ],
       });
   }
-
-  featuredIngestCache.set(orgId, Date.now());
 }
 
 interface SilverRow {
@@ -652,12 +638,20 @@ export async function selectRankedPage(args: {
 }
 
 /**
- * One /next pipeline call: ingest fresh Featured (TTL-gated), score
- * at most UNSCORED_BATCH_SIZE unscored Gold clusters for the
- * brand-set, then return the single best non-pitched candidate.
+ * One /next pipeline call. Exhaustion-driven:
  *
- * No re-scoring: opportunities already in quote_priorities for this
- * exact brand-set tuple are skipped.
+ *   1. Try `selectUnscoredBatch` against the existing silver pool.
+ *   2. If empty, ingest Featured (refetch on demand only) and re-query.
+ *   3. Score whatever was found (≤ UNSCORED_BATCH_SIZE in one
+ *      multi-brand chat-service call).
+ *   4. Return the single best non-pitched candidate.
+ *
+ * No time-based TTL on Featured fetch. The Featured `/opportunities-list`
+ * call only fires when there is genuinely nothing left to score for the
+ * brand-set tuple — natural backpressure: callers fully consume what's
+ * in silver before triggering another upstream fetch. Ingest is
+ * idempotent (onConflictDoNothing on `external_id`), so a repeat call
+ * when Featured has published nothing new is a cheap upsert no-op.
  */
 export async function pickNextOpportunity(args: {
   orgId: string;
@@ -680,15 +674,22 @@ export async function pickNextOpportunity(args: {
     buildClient,
   } = args;
 
-  await ingestFeaturedToSilver({
-    orgId,
-    userId,
-    runId,
-    callerPath,
-    buildClient,
-  });
+  let unscored = await selectUnscoredBatch(orgId, brandIds);
 
-  const unscored = await selectUnscoredBatch(orgId, brandIds);
+  if (unscored.length === 0) {
+    // Silver pool exhausted for this brand-set tuple. Refetch Featured;
+    // ingest is idempotent so this no-ops when nothing new has been
+    // published since the last fetch.
+    await ingestFeaturedToSilver({
+      orgId,
+      userId,
+      runId,
+      callerPath,
+      buildClient,
+    });
+    unscored = await selectUnscoredBatch(orgId, brandIds);
+  }
+
   if (unscored.length > 0) {
     await scoreUnscored({
       candidates: unscored,

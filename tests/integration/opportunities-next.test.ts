@@ -31,7 +31,6 @@ import {
   type MockFeaturedState,
 } from "../helpers/mock-featured.js";
 import { _resetFeaturedClientState } from "../../src/lib/featured-client.js";
-import { _resetFeaturedIngestCache } from "../../src/lib/opportunity-pipeline.js";
 import { ragScore } from "../../src/lib/chat-client.js";
 
 vi.mock("../../src/lib/key-service-client.js", () => ({
@@ -67,7 +66,6 @@ describe("POST /orgs/opportunities/next", () => {
   });
   beforeEach(async () => {
     _resetFeaturedClientState();
-    _resetFeaturedIngestCache();
     vi.mocked(ragScore).mockClear();
     await cleanTestData();
     state = createMockState();
@@ -306,7 +304,7 @@ describe("POST /orgs/opportunities/next", () => {
         .documents
     ).toHaveLength(4);
 
-    // Add 3 more Featured opps; reset ingest cache so they get ingested.
+    // Featured later publishes 3 more opps.
     state.opportunities.push(
       ...Array.from({ length: 3 }, (_, i) => ({
         featuredQuestionId: 700 + i,
@@ -315,10 +313,11 @@ describe("POST /orgs/opportunities/next", () => {
         source: "featured",
       }))
     );
-    _resetFeaturedIngestCache();
     vi.mocked(ragScore).mockClear();
 
-    // Second call: ingest 3 new + 4 already-conflict, score only the 3 new.
+    // Second call: silver pool exhausted → re-ingest Featured → 3 new
+    // silver rows → score only the 3 new ones (existing 4 are skipped
+    // by the unscored anti-join).
     await request(a)
       .post("/orgs/opportunities/next")
       .set(AUTH_HEADERS)
@@ -385,29 +384,81 @@ describe("POST /orgs/opportunities/next", () => {
     expect(vi.mocked(ragScore)).toHaveBeenCalledTimes(1);
   });
 
-  it("Featured TTL: 2 consecutive calls within 5min issue only 1 listOpportunities", async () => {
+  it("exhaustion-driven: Featured fetched on first call (cold pool), skipped while unscored remain, refetched after pool drains", async () => {
+    state.opportunities = Array.from({ length: 12 }, (_, i) => ({
+      featuredQuestionId: 9100 + i,
+      opportunity: `high signal exhaust ${i}`,
+      mediaOutlet: `Outlet ${i}`,
+      source: "featured",
+    }));
+
+    const a = app();
+    // Call 1: silver empty → ingest fires → score 10 of 12.
+    await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(state.listOpportunitiesCalls).toBe(1);
+
+    // Call 2: 2 unscored still in silver → NO ingest (avoid wasting
+    // Featured budget while consumer hasn't drained what's already
+    // landed).
+    await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(state.listOpportunitiesCalls).toBe(1);
+
+    // Call 3: pool now fully scored → ingest fires. Featured publishes
+    // nothing new; onConflictDoNothing makes the upsert a no-op.
+    await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(state.listOpportunitiesCalls).toBe(2);
+  });
+
+  it("exhaustion refetch surfaces newly-published Featured opportunities", async () => {
     state.opportunities = [
       {
-        featuredQuestionId: 9100,
-        opportunity: "high signal ttl",
-        mediaOutlet: "Outlet ttl",
+        featuredQuestionId: 9300,
+        opportunity: "high signal first",
+        mediaOutlet: "Outlet first",
         source: "featured",
       },
     ];
-
     const a = app();
-    await request(a)
-      .post("/orgs/opportunities/next")
-      .set(AUTH_HEADERS)
-      .send({});
-    expect(state.listOpportunitiesCalls).toBe(1);
 
-    // Second call within TTL → skip Featured fetch.
+    // Cold start: ingest + score the single available opp.
     await request(a)
       .post("/orgs/opportunities/next")
       .set(AUTH_HEADERS)
       .send({});
     expect(state.listOpportunitiesCalls).toBe(1);
+    expect(vi.mocked(ragScore)).toHaveBeenCalledTimes(1);
+
+    // Featured publishes a new opp later.
+    state.opportunities.push({
+      featuredQuestionId: 9301,
+      opportunity: "high signal second",
+      mediaOutlet: "Outlet second",
+      source: "featured",
+    });
+    vi.mocked(ragScore).mockClear();
+
+    // Next call: pool fully scored for this brand-set → refetch fires →
+    // new opp lands in silver → scored → returned.
+    const res = await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(state.listOpportunitiesCalls).toBe(2);
+    expect(vi.mocked(ragScore)).toHaveBeenCalledTimes(1);
+    expect(
+      (vi.mocked(ragScore).mock.calls[0][0] as { documents: unknown[] })
+        .documents
+    ).toHaveLength(1);
+    expect(res.body.found).toBe(true);
   });
 
   it("does NOT re-score across calls — quote_priorities rows reused", async () => {
