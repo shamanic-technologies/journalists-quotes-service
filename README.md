@@ -32,10 +32,9 @@ The server boots on `PORT` (default `3050`) and runs Drizzle migrations automati
 | `PORT` | Listen port (default `3050`) |
 | `SENTRY_DSN` | Optional Sentry DSN |
 | `SCORE_THRESHOLD` | Float, default `0.5` — minimum RAG score to consider an opportunity matchable |
-| `FEATURED_API_BASE_URL` | Default `https://featured.com/api/external-users` |
+| `EXPERT_QUOTES_REQUESTS_SERVICE_URL` / `EXPERT_QUOTES_REQUESTS_SERVICE_API_KEY` | EQRS — Featured.com bronze wrapper (auth, cursor, rate-limit, submit). JQS pulls new opps via `GET /orgs/featured/opportunities?since=…` and submits replies via `POST /orgs/featured/answers`. |
 | `RUNS_SERVICE_URL` / `RUNS_SERVICE_API_KEY` | Run tracking |
-| `KEY_SERVICE_URL` / `KEY_SERVICE_API_KEY` | Featured creds resolution — reads two scalar platform keys (`featured-username`, `featured-password`) |
-| `BRAND_SERVICE_URL` / `BRAND_SERVICE_API_KEY` | Brand metadata + logo (Featured profile bootstrap) |
+| `BRAND_SERVICE_URL` / `BRAND_SERVICE_API_KEY` | Brand metadata (HARO email signature, future use) |
 | `CHAT_SERVICE_URL` / `CHAT_SERVICE_API_KEY` | RAG scoring — single multi-brand call per /next tick (`POST /orgs/rag/score` with body `{ documents, brandIds }`) |
 | `EMAIL_GATEWAY_SERVICE_URL` / `EMAIL_GATEWAY_SERVICE_API_KEY` | WF3 email_reply dispatch via `POST /orgs/send` |
 | `BILLING_SERVICE_URL` / `BILLING_SERVICE_API_KEY` | featured-api-pitch-submit credit gate |

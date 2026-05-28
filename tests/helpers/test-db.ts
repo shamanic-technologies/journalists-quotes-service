@@ -1,11 +1,11 @@
 import { db, sql } from "../../src/db/index.js";
 import {
+  eqrsSyncState,
   inboundEmails,
   providerQuoteRequests,
   quoteOpportunities,
   quotePriorities,
   quotePitches,
-  featuredProfiles,
 } from "../../src/db/schema.js";
 
 export async function cleanTestData() {
@@ -14,7 +14,7 @@ export async function cleanTestData() {
   await db.delete(providerQuoteRequests);
   await db.delete(quoteOpportunities);
   await db.delete(inboundEmails);
-  await db.delete(featuredProfiles);
+  await db.delete(eqrsSyncState);
 }
 
 export async function closeDb() {

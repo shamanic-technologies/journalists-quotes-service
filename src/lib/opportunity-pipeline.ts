@@ -1,33 +1,25 @@
 import { and, eq, inArray, isNull, or, sql as drizzleSql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
+  eqrsSyncState,
   providerQuoteRequests,
   quoteOpportunities,
   quotePitches,
   quotePriorities,
 } from "../db/schema.js";
 import {
-  FeaturedClient,
-  type FeaturedCredentials,
-  type FeaturedClientOptions,
-  type FeaturedOpportunity,
-} from "./featured-client.js";
-import { getFeaturedCredentials } from "./key-service-client.js";
+  createEqrsClient,
+  type EqrsClient,
+  type EqrsOpportunity,
+} from "./eqrs-client.js";
 import { ragScore } from "./chat-client.js";
 import { SHARED_EMAIL_ORG_ID } from "./inbound/process.js";
 import { computeFingerprint } from "./cluster/fingerprint.js";
 
-export class KeyServiceError extends Error {
+export class EqrsServiceError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "KeyServiceError";
-  }
-}
-
-export class FeaturedListError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "FeaturedListError";
+    this.name = "EqrsServiceError";
   }
 }
 
@@ -78,104 +70,59 @@ export interface RankedOpportunity extends EligibleOpportunity {
   whyRelevant: string | null;
 }
 
-export type BuildFeaturedClient = (
-  credentials: FeaturedCredentials,
-  overrides?: Partial<FeaturedClientOptions>
-) => FeaturedClient;
-
 function safeParseDate(value: string | undefined | null): Date | null {
   if (!value) return null;
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function featuredExternalId(o: FeaturedOpportunity): string {
-  if (typeof o.featuredQuestionId === "number")
-    return String(o.featuredQuestionId);
-  if (o.pitchUrl) return o.pitchUrl;
-  return computeFingerprint(o.opportunity ?? "", o.mediaOutlet);
-}
-
-// Negative cache: when a refetch ingested ZERO new silver rows for an
-// org, suspend further Featured `/opportunities-list` fetches for this
-// org for EMPTY_INGEST_SUSPEND_MS. Lets a saturated catalog stop hitting
-// Featured every /next tick while still allowing growth on the next
-// fetch after the suspension window. NOT a generic TTL — only fires
-// after an explicit empty-result refetch.
-const EMPTY_INGEST_SUSPEND_MS = 60 * 1000;
-const emptyIngestSuspension = new Map<string, number>();
-
-export function _resetEmptyIngestSuspension() {
-  emptyIngestSuspension.clear();
-}
-
 /**
- * Fetch live Featured opportunities and write through to silver +
- * cluster into Gold via fingerprint. Idempotent on
- * (provider, ingestion_channel, external_id) — concurrent / repeated
- * calls deduplicate via the natural-key unique constraint.
+ * Pull new Featured opportunities from expert-quotes-requests-service
+ * (EQRS) since the org's last cursor, project them into JQS silver +
+ * Gold cluster, advance cursor. EQRS owns the Featured.com HTTP /
+ * JWT / rate-limit / bronze raw payload responsibilities; JQS only
+ * keeps the silver projection + clustering.
  *
- * Negative-cache shortcut: when a prior call ingested 0 new silvers
- * for this org, the next call within EMPTY_INGEST_SUSPEND_MS skips
- * the Featured HTTP fetch entirely (Featured has nothing new for us;
- * hitting it every /next tick is wasteful). The suspension is cleared
- * the first time a fetch DOES bring in new silvers.
+ * Idempotent: silver insert uses
+ * ON CONFLICT (provider, ingestion_channel, external_id) DO NOTHING.
+ * Repeat calls when EQRS has nothing new are cheap no-ops.
  */
 export async function ingestFeaturedToSilver(args: {
   orgId: string;
   userId?: string;
   runId?: string;
-  callerPath: string;
-  buildClient: BuildFeaturedClient;
+  eqrsClient: EqrsClient;
 }): Promise<void> {
-  const { orgId, userId, runId, callerPath, buildClient } = args;
+  const { orgId, userId, runId, eqrsClient } = args;
 
-  const suspendedUntil = emptyIngestSuspension.get(orgId);
-  if (suspendedUntil != null && Date.now() < suspendedUntil) {
-    console.log(
-      `[journalists-quotes-service] /next stage=ingest-skip-empty-suspension orgId=${orgId} resumesInMs=${suspendedUntil - Date.now()}`
-    );
-    return;
-  }
+  const [cursorRow] = await db
+    .select({ lastSyncedAt: eqrsSyncState.lastSyncedAt })
+    .from(eqrsSyncState)
+    .where(eq(eqrsSyncState.orgId, orgId));
 
-  let credentials: FeaturedCredentials;
+  const since = cursorRow?.lastSyncedAt
+    ? cursorRow.lastSyncedAt.toISOString()
+    : undefined;
+
+  let response;
   try {
-    const result = await getFeaturedCredentials({
-      callerMethod: "POST",
-      callerPath,
+    response = await eqrsClient.fetchOpportunities({
       orgId,
       userId,
       runId,
+      since,
     });
-    credentials = { username: result.username, password: result.password };
   } catch (err) {
-    if ((err as Error).name === "KeyServiceUnavailableError") {
-      throw new KeyServiceError((err as Error).message);
-    }
-    throw err;
+    throw new EqrsServiceError((err as Error).message);
   }
 
-  const client = buildClient(credentials);
-  let featuredOpps: FeaturedOpportunity[];
-  try {
-    featuredOpps = await client.listOpportunities();
-  } catch (err) {
-    throw new FeaturedListError(
-      `Featured listOpportunities failed: ${(err as Error).message}`
-    );
-  }
-
-  const insertableOpps = featuredOpps.filter(
-    (o) => typeof o.opportunity === "string" && o.opportunity.length > 0
-  );
+  const items = response.items;
 
   let newSilverCount = 0;
-  if (insertableOpps.length > 0) {
-    // Bulk path: 3 queries total regardless of catalog size (was N × 2-3
-    // sequential roundtrips per Featured opp, which busted the workflow
-    // Bun fetch budget on saturated catalogs of ~200+).
-    const prepared = insertableOpps.map((o) => {
-      const text = o.opportunity!;
+  if (items.length > 0) {
+    // Bulk path: 3 queries total regardless of EQRS page size.
+    const prepared = items.map((o: EqrsOpportunity) => {
+      const text = o.opportunityText;
       const outlet = o.mediaOutlet ?? null;
       const fingerprint = computeFingerprint(text, outlet);
       return {
@@ -184,7 +131,6 @@ export async function ingestFeaturedToSilver(args: {
         outlet,
         fingerprint,
         deadline: safeParseDate(o.deadline),
-        externalId: featuredExternalId(o),
       };
     });
 
@@ -205,7 +151,7 @@ export async function ingestFeaturedToSilver(args: {
         set: { lastSeenAt: drizzleSql`now()` },
       });
 
-    // 2. Resolve cluster ids by fingerprint for FK on silver inserts.
+    // 2. Resolve cluster ids by fingerprint.
     const fingerprints = prepared.map((r) => r.fingerprint);
     const clusterRows = await db
       .select({
@@ -218,8 +164,9 @@ export async function ingestFeaturedToSilver(args: {
       clusterRows.map((c) => [c.fingerprint, c.id])
     );
 
-    // 3. Bulk insert silver rows with ON CONFLICT DO NOTHING; .returning()
-    //    yields only freshly-inserted rows, which is our new-silver count.
+    // 3. Bulk insert silver rows. raw=null — EQRS owns the bronze raw
+    //    payload; JQS only stores the projection columns it needs for
+    //    silver clustering + representative-silver lookup in /reply.
     const silverInserted = await db
       .insert(providerQuoteRequests)
       .values(
@@ -228,16 +175,13 @@ export async function ingestFeaturedToSilver(args: {
           .map((r) => ({
             provider: "featured",
             ingestionChannel: "api" as const,
-            externalId: r.externalId,
-            featuredQuestionId:
-              typeof r.o.featuredQuestionId === "number"
-                ? r.o.featuredQuestionId
-                : null,
+            externalId: r.o.externalId,
+            featuredQuestionId: r.o.featuredQuestionId,
             mediaOutlet: r.outlet,
             opportunityText: r.text,
             pitchUrl: r.o.pitchUrl ?? null,
             deadline: r.deadline,
-            raw: r.o,
+            raw: null,
             quoteOpportunityId: clusterIdByFingerprint.get(r.fingerprint)!,
             isCanonical: false,
             fingerprint: r.fingerprint,
@@ -255,15 +199,37 @@ export async function ingestFeaturedToSilver(args: {
     newSilverCount = silverInserted.length;
   }
 
-  console.log(
-    `[journalists-quotes-service] /next stage=ingest-complete orgId=${orgId} featuredReturned=${insertableOpps.length} newSilverCount=${newSilverCount}`
-  );
-
-  if (newSilverCount === 0) {
-    emptyIngestSuspension.set(orgId, Date.now() + EMPTY_INGEST_SUSPEND_MS);
-  } else {
-    emptyIngestSuspension.delete(orgId);
+  // Advance cursor — use EQRS-provided nextSince when present, else
+  // bump to now() if we got items (caller already saw everything up to
+  // this moment). Leave cursor unchanged if EQRS returned 0 items AND
+  // no nextSince — next call will refetch from the same `since`.
+  const nextSince =
+    response.nextSince != null
+      ? new Date(response.nextSince)
+      : items.length > 0
+        ? new Date()
+        : null;
+  if (nextSince != null) {
+    await db
+      .insert(eqrsSyncState)
+      .values({
+        orgId,
+        lastSyncedAt: nextSince,
+        lastCursor: null,
+        updatedAt: drizzleSql`now()`,
+      })
+      .onConflictDoUpdate({
+        target: eqrsSyncState.orgId,
+        set: {
+          lastSyncedAt: nextSince,
+          updatedAt: drizzleSql`now()`,
+        },
+      });
   }
+
+  console.log(
+    `[journalists-quotes-service] /next stage=eqrs-fetch orgId=${orgId} since=${since ?? "null"} returned=${items.length} newSilverCount=${newSilverCount} nextSince=${response.nextSince ?? "null"} refreshed=${response.refreshed}`
+  );
 }
 
 interface SilverRow {
@@ -855,17 +821,16 @@ export async function selectOpportunitiesStats(args: {
  * One /next pipeline call. Exhaustion-driven:
  *
  *   1. Try `selectUnscoredBatch` against the existing silver pool.
- *   2. If empty, ingest Featured (refetch on demand only) and re-query.
+ *   2. If empty, pull new opportunities from EQRS since the org's last
+ *      cursor and project into silver + Gold cluster. Re-query.
  *   3. Score whatever was found (≤ UNSCORED_BATCH_SIZE in one
  *      multi-brand chat-service call).
  *   4. Return the single best non-pitched candidate.
  *
- * No time-based TTL on Featured fetch. The Featured `/opportunities-list`
- * call only fires when there is genuinely nothing left to score for the
- * brand-set tuple — natural backpressure: callers fully consume what's
- * in silver before triggering another upstream fetch. Ingest is
- * idempotent (onConflictDoNothing on `external_id`), so a repeat call
- * when Featured has published nothing new is a cheap upsert no-op.
+ * No time-based TTL. EQRS owns Featured throttling internally; from
+ * JQS's point of view, EQRS is the upstream and we pull only when the
+ * silver pool for this brand-set is exhausted. EQRS replies fast when
+ * nothing new (`items=[]` + no nextSince).
  */
 export async function pickNextOpportunity(args: {
   orgId: string;
@@ -874,8 +839,7 @@ export async function pickNextOpportunity(args: {
   userId?: string;
   runId?: string;
   scoreThreshold: number;
-  callerPath: string;
-  buildClient: BuildFeaturedClient;
+  eqrsClient: EqrsClient;
 }): Promise<RankedOpportunity | null> {
   const {
     orgId,
@@ -884,8 +848,7 @@ export async function pickNextOpportunity(args: {
     userId,
     runId,
     scoreThreshold,
-    callerPath,
-    buildClient,
+    eqrsClient,
   } = args;
 
   const startedAt = Date.now();
@@ -897,20 +860,20 @@ export async function pickNextOpportunity(args: {
   );
 
   if (unscored.length === 0) {
-    // Silver pool exhausted for this brand-set tuple. Refetch Featured;
-    // ingest is idempotent so this no-ops when nothing new has been
-    // published since the last fetch.
+    // Silver pool exhausted for this brand-set tuple. Pull from EQRS
+    // since last cursor — idempotent on (provider, ingestion_channel,
+    // external_id) so repeated calls when EQRS has nothing new are
+    // cheap no-ops.
     const ingestStart = Date.now();
     await ingestFeaturedToSilver({
       orgId,
       userId,
       runId,
-      callerPath,
-      buildClient,
+      eqrsClient,
     });
     unscored = await selectUnscoredBatch(orgId, brandIds);
     console.log(
-      `[journalists-quotes-service] /next stage=featured-refetch orgId=${orgId} brandIds=${brandIdsLabel} unscoredAfterIngest=${unscored.length} ingestMs=${Date.now() - ingestStart}`
+      `[journalists-quotes-service] /next stage=eqrs-refetch orgId=${orgId} brandIds=${brandIdsLabel} unscoredAfterIngest=${unscored.length} ingestMs=${Date.now() - ingestStart}`
     );
   }
 
