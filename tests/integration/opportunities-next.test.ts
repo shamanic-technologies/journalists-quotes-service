@@ -72,6 +72,54 @@ describe("POST /orgs/opportunities/next", () => {
     });
   }
 
+  it("dedupes EQRS rows with duplicate fingerprints in the same batch (Featured surfaces same question across multiple rows)", async () => {
+    // Same opportunityText + mediaOutlet → same fingerprint. Featured
+    // sometimes returns the same question under different external_ids
+    // (e.g. tagged for different verticals). ON CONFLICT DO UPDATE on
+    // quote_opportunities errors with Postgres 21000 if not deduped.
+    state.opportunities = [
+      makeOpportunity({
+        externalId: "dup-a",
+        featuredQuestionId: 4001,
+        opportunityText: "high signal duplicate question",
+        mediaOutlet: "Outlet",
+      }),
+      makeOpportunity({
+        externalId: "dup-b",
+        featuredQuestionId: 4002,
+        opportunityText: "high signal duplicate question",
+        mediaOutlet: "Outlet",
+      }),
+      makeOpportunity({
+        externalId: "uniq",
+        featuredQuestionId: 4003,
+        opportunityText: "high signal unique row",
+        mediaOutlet: "Outlet",
+      }),
+    ];
+
+    const res = await request(app())
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.found).toBe(true);
+
+    // Two Gold clusters: one for the duplicated fingerprint, one for the unique row.
+    const goldRows = await db.select().from(quoteOpportunities);
+    expect(goldRows).toHaveLength(2);
+
+    // Three silver rows: dup-a + dup-b BOTH inserted (silver natural key
+    // is external_id, not fingerprint) + uniq. dup-a and dup-b point at
+    // the SAME Gold cluster.
+    const silverRows = await db.select().from(providerQuoteRequests);
+    expect(silverRows).toHaveLength(3);
+    const dupA = silverRows.find((s) => s.externalId === "dup-a");
+    const dupB = silverRows.find((s) => s.externalId === "dup-b");
+    expect(dupA?.quoteOpportunityId).toBe(dupB?.quoteOpportunityId);
+  });
+
   it("returns { found: false } when EQRS has no opportunities", async () => {
     const res = await request(app())
       .post("/orgs/opportunities/next")

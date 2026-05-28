@@ -121,7 +121,7 @@ export async function ingestFeaturedToSilver(args: {
   let newSilverCount = 0;
   if (items.length > 0) {
     // Bulk path: 3 queries total regardless of EQRS page size.
-    const prepared = items.map((o: EqrsOpportunity) => {
+    const allPrepared = items.map((o: EqrsOpportunity) => {
       const text = o.opportunityText;
       const outlet = o.mediaOutlet ?? null;
       const fingerprint = computeFingerprint(text, outlet);
@@ -134,11 +134,28 @@ export async function ingestFeaturedToSilver(args: {
       };
     });
 
+    // Dedupe by fingerprint within this batch. Featured.com sometimes
+    // surfaces the same question across multiple Featured rows (e.g.
+    // tagged for different verticals); after our fingerprint(text,
+    // outlet) collapse they hash to the same Gold cluster. ON CONFLICT
+    // DO UPDATE cannot affect the same row twice in one command —
+    // Postgres errcode 21000 — so we must keep one per fingerprint
+    // before the bulk upsert. The dropped duplicates still get a
+    // silver row each (silver natural key is external_id, not
+    // fingerprint), but they all point at the same Gold cluster.
+    const preparedByFingerprint = new Map<string, typeof allPrepared[number]>();
+    for (const r of allPrepared) {
+      if (!preparedByFingerprint.has(r.fingerprint)) {
+        preparedByFingerprint.set(r.fingerprint, r);
+      }
+    }
+    const uniqueByFingerprint = Array.from(preparedByFingerprint.values());
+
     // 1. Bulk upsert Gold clusters by fingerprint (touch last_seen_at).
     await db
       .insert(quoteOpportunities)
       .values(
-        prepared.map((r) => ({
+        uniqueByFingerprint.map((r) => ({
           fingerprint: r.fingerprint,
           canonicalText: r.text,
           canonicalOutlet: r.outlet,
@@ -152,7 +169,7 @@ export async function ingestFeaturedToSilver(args: {
       });
 
     // 2. Resolve cluster ids by fingerprint.
-    const fingerprints = prepared.map((r) => r.fingerprint);
+    const fingerprints = uniqueByFingerprint.map((r) => r.fingerprint);
     const clusterRows = await db
       .select({
         id: quoteOpportunities.id,
@@ -164,15 +181,31 @@ export async function ingestFeaturedToSilver(args: {
       clusterRows.map((c) => [c.fingerprint, c.id])
     );
 
-    // 3. Bulk insert silver rows. raw=null — EQRS owns the bronze raw
-    //    payload; JQS only stores the projection columns it needs for
-    //    silver clustering + representative-silver lookup in /reply.
-    const silverInserted = await db
-      .insert(providerQuoteRequests)
-      .values(
-        prepared
-          .filter((r) => clusterIdByFingerprint.has(r.fingerprint))
-          .map((r) => ({
+    // 3. Bulk insert silver rows. Dedupe by external_id within the
+    //    batch too — silver natural key is
+    //    (provider, ingestion_channel, external_id), and ON CONFLICT
+    //    DO NOTHING also errors with 21000 when the VALUES list has
+    //    duplicates on the conflict target. raw=null — EQRS owns the
+    //    bronze raw payload; JQS only stores the projection columns
+    //    it needs for clustering + representative-silver lookup in
+    //    /reply.
+    const silverRowsByExternalId = new Map<
+      string,
+      typeof allPrepared[number]
+    >();
+    for (const r of allPrepared) {
+      if (!clusterIdByFingerprint.has(r.fingerprint)) continue;
+      if (!silverRowsByExternalId.has(r.o.externalId)) {
+        silverRowsByExternalId.set(r.o.externalId, r);
+      }
+    }
+    const uniqueByExternalId = Array.from(silverRowsByExternalId.values());
+
+    if (uniqueByExternalId.length > 0) {
+      const silverInserted = await db
+        .insert(providerQuoteRequests)
+        .values(
+          uniqueByExternalId.map((r) => ({
             provider: "featured",
             ingestionChannel: "api" as const,
             externalId: r.o.externalId,
@@ -187,16 +220,17 @@ export async function ingestFeaturedToSilver(args: {
             fingerprint: r.fingerprint,
             orgId,
           }))
-      )
-      .onConflictDoNothing({
-        target: [
-          providerQuoteRequests.provider,
-          providerQuoteRequests.ingestionChannel,
-          providerQuoteRequests.externalId,
-        ],
-      })
-      .returning({ id: providerQuoteRequests.id });
-    newSilverCount = silverInserted.length;
+        )
+        .onConflictDoNothing({
+          target: [
+            providerQuoteRequests.provider,
+            providerQuoteRequests.ingestionChannel,
+            providerQuoteRequests.externalId,
+          ],
+        })
+        .returning({ id: providerQuoteRequests.id });
+      newSilverCount = silverInserted.length;
+    }
   }
 
   // Advance cursor — use EQRS-provided nextSince when present, else
