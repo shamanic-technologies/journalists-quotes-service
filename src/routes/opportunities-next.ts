@@ -1,16 +1,13 @@
 import { Router } from "express";
 import { z } from "zod";
 import {
-  FeaturedListError,
-  KeyServiceError,
+  EqrsServiceError,
   pickNextOpportunity,
-  type BuildFeaturedClient,
 } from "../lib/opportunity-pipeline.js";
 import {
-  FeaturedClient,
-  type FeaturedCredentials,
-  type FeaturedClientOptions,
-} from "../lib/featured-client.js";
+  createEqrsClient,
+  type EqrsClient,
+} from "../lib/eqrs-client.js";
 import {
   BrandIdsHeaderError,
   parseBrandIdsHeader,
@@ -23,21 +20,14 @@ const OpportunityNextRequestSchema = z.object({
 });
 
 export interface OpportunitiesNextDeps {
-  buildClient?: BuildFeaturedClient;
-}
-
-function defaultBuildClient(
-  credentials: FeaturedCredentials,
-  overrides?: Partial<FeaturedClientOptions>
-): FeaturedClient {
-  return new FeaturedClient({ credentials, ...overrides });
+  eqrsClient?: EqrsClient;
 }
 
 export function createOpportunitiesNextRouter(
   deps: OpportunitiesNextDeps = {}
 ): Router {
   const router = Router();
-  const buildClient = deps.buildClient ?? defaultBuildClient;
+  const eqrsClient = deps.eqrsClient ?? createEqrsClient();
 
   router.post("/orgs/opportunities/next", async (req, res) => {
     let brandIds: string[];
@@ -74,11 +64,10 @@ export function createOpportunitiesNextRouter(
         userId,
         runId,
         scoreThreshold: SCORE_THRESHOLD,
-        callerPath: "/orgs/opportunities/next",
-        buildClient,
+        eqrsClient,
       });
     } catch (err) {
-      if (err instanceof KeyServiceError || err instanceof FeaturedListError) {
+      if (err instanceof EqrsServiceError) {
         res.status(502).json({ error: err.message });
         return;
       }

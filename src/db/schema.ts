@@ -185,27 +185,20 @@ export const quotePriorities = pgTable(
   ]
 );
 
-export const featuredProfiles = pgTable(
-  "featured_profiles",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    orgId: uuid("org_id").notNull(),
-    brandId: uuid("brand_id").notNull(),
-    featuredProfileId: integer("featured_profile_id").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-  },
-  (table) => [
-    uniqueIndex("idx_featured_profiles_org_brand").on(
-      table.orgId,
-      table.brandId
-    ),
-  ]
-);
+/**
+ * Per-org cursor state for incremental fetches from
+ * expert-quotes-requests-service GET /orgs/featured/opportunities.
+ * `last_synced_at` is the ISO timestamp passed as `?since=…` on the
+ * next pull (advance after a successful fetch).
+ */
+export const eqrsSyncState = pgTable("eqrs_sync_state", {
+  orgId: uuid("org_id").primaryKey(),
+  lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+  lastCursor: text("last_cursor"),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
 
 export const quotePitches = pgTable(
   "quote_pitches",
@@ -269,7 +262,7 @@ export type ProviderQuoteRequest = typeof providerQuoteRequests.$inferSelect;
 export type NewProviderQuoteRequest = typeof providerQuoteRequests.$inferInsert;
 export type QuotePriority = typeof quotePriorities.$inferSelect;
 export type NewQuotePriority = typeof quotePriorities.$inferInsert;
-export type FeaturedProfile = typeof featuredProfiles.$inferSelect;
-export type NewFeaturedProfile = typeof featuredProfiles.$inferInsert;
+export type EqrsSyncState = typeof eqrsSyncState.$inferSelect;
+export type NewEqrsSyncState = typeof eqrsSyncState.$inferInsert;
 export type QuotePitch = typeof quotePitches.$inferSelect;
 export type NewQuotePitch = typeof quotePitches.$inferInsert;

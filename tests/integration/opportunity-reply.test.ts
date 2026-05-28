@@ -14,7 +14,6 @@ import {
   TEST_BRAND,
   TEST_BRAND_B,
   TEST_CAMPAIGN_A,
-  TEST_CAMPAIGN_B,
   TEST_ORG_A,
 } from "../helpers/test-app.js";
 import { cleanTestData, closeDb } from "../helpers/test-db.js";
@@ -26,21 +25,11 @@ import {
 } from "../../src/db/schema.js";
 import { eq } from "drizzle-orm";
 import {
-  buildMockClient,
-  createMockState,
-  type MockFeaturedState,
-} from "../helpers/mock-featured.js";
-import { _resetFeaturedClientState } from "../../src/lib/featured-client.js";
+  buildMockEqrsClient,
+  createMockEqrsState,
+  type MockEqrsState,
+} from "../helpers/mock-eqrs.js";
 import { SHARED_EMAIL_ORG_ID } from "../../src/lib/inbound/process.js";
-
-vi.mock("../../src/lib/key-service-client.js", () => ({
-  getFeaturedCredentials: vi.fn(async () => ({
-    username: "mock-u",
-    password: "mock-p",
-    keySource: "platform" as const,
-  })),
-  KeyServiceUnavailableError: class extends Error {},
-}));
 
 vi.mock("../../src/lib/billing-client.js", () => ({
   authorizeCredit: vi.fn(async () => ({
@@ -65,28 +54,9 @@ vi.mock("../../src/lib/runs-client.js", async () => {
   };
 });
 
-vi.mock("../../src/lib/brand-client.js", () => ({
-  getBrand: vi.fn(async (brandId: string) => ({
-    id: brandId,
-    domain: "test-brand.com",
-    url: "https://test-brand.com",
-    name: "Test Brand",
-    logoUrl: "http://cdn.test/logo.png",
-    createdAt: "2024-01-01T00:00:00Z",
-    updatedAt: "2024-01-01T00:00:00Z",
-  })),
-}));
-
 type FetchMock = ReturnType<typeof vi.fn>;
 let fetchMock: FetchMock;
-
-const fetchLogoBytes = vi.fn(async () => ({
-  bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xe0]),
-  contentType: "image/png",
-  filename: "logo.png",
-}));
-
-let state: MockFeaturedState;
+let state: MockEqrsState;
 
 async function seedFeaturedCluster(featuredQuestionId: number) {
   const fingerprint = `fp-featured-${featuredQuestionId}`;
@@ -150,9 +120,8 @@ describe("POST /orgs/opportunities/:id/reply", () => {
     await cleanTestData();
   });
   beforeEach(async () => {
-    _resetFeaturedClientState();
     await cleanTestData();
-    state = createMockState();
+    state = createMockEqrsState();
     fetchMock = vi.fn(async () =>
       new Response(
         JSON.stringify({
@@ -173,13 +142,12 @@ describe("POST /orgs/opportunities/:id/reply", () => {
   function app() {
     return createTestApp({
       opportunityReplyDeps: {
-        buildClient: buildMockClient(state),
-        fetchLogoBytes,
+        eqrsClient: buildMockEqrsClient(state),
       },
     });
   }
 
-  it("dispatches Featured opportunity via FeaturedClient.submitAnswer (id = Gold cluster id)", async () => {
+  it("dispatches Featured opportunity via EQRS POST /orgs/featured/answers (id = Gold cluster id)", async () => {
     const { opp } = await seedFeaturedCluster(5050);
     const pitchContent = "P".repeat(200);
 
@@ -191,9 +159,11 @@ describe("POST /orgs/opportunities/:id/reply", () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("submitted");
     expect(res.body.deliveryMethod).toBe("featured_api");
-    expect(state.submitted).toHaveLength(1);
-    expect(state.submitted[0].featuredQuestionId).toBe(5050);
-    expect(state.submitted[0].answer).toBe(pitchContent);
+    expect(state.submitCalls).toHaveLength(1);
+    expect(state.submitCalls[0].featuredQuestionId).toBe(5050);
+    expect(state.submitCalls[0].answer).toBe(pitchContent);
+    expect(state.submitCalls[0].brandId).toBe(TEST_BRAND);
+    expect(state.submitCalls[0].orgId).toBe(TEST_ORG_A);
 
     const pitches = await db
       .select()
@@ -241,7 +211,6 @@ describe("POST /orgs/opportunities/:id/reply", () => {
 
   it("picks Featured silver representative when cluster has both Featured + email silvers", async () => {
     const { opp } = await seedHaroCluster("uuid-mixed");
-    // Attach a Featured silver row to the SAME cluster.
     await db.insert(providerQuoteRequests).values({
       provider: "featured",
       ingestionChannel: "api",
@@ -259,10 +228,9 @@ describe("POST /orgs/opportunities/:id/reply", () => {
       .set(AUTH_HEADERS)
       .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
 
-    // Featured preferred → Featured path
     expect(res.status).toBe(200);
     expect(res.body.deliveryMethod).toBe("featured_api");
-    expect(state.submitted[0].featuredQuestionId).toBe(9999);
+    expect(state.submitCalls[0].featuredQuestionId).toBe(9999);
   });
 
   it("picks most recently fetched email silver when cluster has only email silvers", async () => {
@@ -344,14 +312,12 @@ describe("POST /orgs/opportunities/:id/reply", () => {
   it("co-brand pitch [A,B] is distinct from solo pitch [A] for idempotency", async () => {
     const { opp } = await seedHaroCluster("uuid-co-brand");
 
-    // Solo brand A pitch first.
     const solo = await request(app())
       .post(`/orgs/opportunities/${opp.id}/reply`)
       .set(AUTH_HEADERS)
       .send({ pitchContent: "S".repeat(200), campaignId: TEST_CAMPAIGN_A });
     expect(solo.body.status).toBe("submitted");
 
-    // Co-brand [A, B] pitch must NOT be blocked.
     const headers = { ...AUTH_HEADERS } as Record<string, string>;
     headers["x-brand-id"] = `${TEST_BRAND},${TEST_BRAND_B}`;
     const coBrand = await request(app())
@@ -392,7 +358,7 @@ describe("POST /orgs/opportunities/:id/reply", () => {
     expect(pitch.brandIds).toEqual([TEST_BRAND, TEST_BRAND_B].sort());
   });
 
-  it("returns 402 and does NOT call Featured submitAnswer when billing is insufficient", async () => {
+  it("returns 402 and does NOT call EQRS submitAnswer when billing is insufficient", async () => {
     const { opp } = await seedFeaturedCluster(7777);
     const { authorizeCredit } = await import(
       "../../src/lib/billing-client.js"
@@ -410,7 +376,7 @@ describe("POST /orgs/opportunities/:id/reply", () => {
 
     expect(res.status).toBe(402);
     expect(res.body.error).toMatch(/insufficient credit/);
-    expect(state.submitted).toHaveLength(0);
+    expect(state.submitCalls).toHaveLength(0);
     const pitches = await db.select().from(quotePitches);
     expect(pitches).toHaveLength(0);
   });
@@ -434,45 +400,6 @@ describe("POST /orgs/opportunities/:id/reply", () => {
       {
         costName: "featured-api-pitch-submit",
         costSource: "platform",
-        quantity: 1,
-        status: "actual",
-      },
-    ]);
-  });
-
-  it("skips billing-service authorize and records costSource='org' when keySource is 'org'", async () => {
-    const { opp } = await seedFeaturedCluster(6060);
-    const { getFeaturedCredentials } = await import(
-      "../../src/lib/key-service-client.js"
-    );
-    (
-      getFeaturedCredentials as unknown as ReturnType<typeof vi.fn>
-    ).mockResolvedValueOnce({
-      username: "org-u",
-      password: "org-p",
-      keySource: "org",
-    });
-    const { authorizeCredit } = await import("../../src/lib/billing-client.js");
-    const authorized = authorizeCredit as unknown as ReturnType<typeof vi.fn>;
-    authorized.mockClear();
-    const { addCosts } = await import("../../src/lib/runs-client.js");
-    const addCostsMock = addCosts as unknown as ReturnType<typeof vi.fn>;
-    addCostsMock.mockClear();
-
-    const res = await request(app())
-      .post(`/orgs/opportunities/${opp.id}/reply`)
-      .set(AUTH_HEADERS)
-      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
-
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("submitted");
-    expect(authorized).not.toHaveBeenCalled();
-    expect(addCostsMock).toHaveBeenCalledTimes(1);
-    const [, items] = addCostsMock.mock.calls[0];
-    expect(items).toEqual([
-      {
-        costName: "featured-api-pitch-submit",
-        costSource: "org",
         quantity: 1,
         status: "actual",
       },
@@ -574,5 +501,44 @@ describe("POST /orgs/opportunities/:id/reply", () => {
       .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/x-brand-id/);
+  });
+
+  it("surfaces EQRS rate_limited status", async () => {
+    const { opp } = await seedFeaturedCluster(9090);
+    state.submitImpl = async () => ({
+      status: "rate_limited",
+      retryAfter: 60,
+    });
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${opp.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("rate_limited");
+    expect(res.body.retryAfter).toBe(60);
+    const pitches = await db.select().from(quotePitches);
+    expect(pitches).toHaveLength(0);
+  });
+
+  it("persists EQRS error status + returns error", async () => {
+    const { opp } = await seedFeaturedCluster(9191);
+    state.submitImpl = async () => ({
+      status: "error",
+      error: "featured submit failed downstream",
+    });
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${opp.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("error");
+    expect(res.body.error).toMatch(/featured submit failed/);
+    const pitches = await db.select().from(quotePitches);
+    expect(pitches).toHaveLength(1);
+    expect(pitches[0].status).toBe("error");
   });
 });
