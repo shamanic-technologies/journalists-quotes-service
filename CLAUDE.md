@@ -16,11 +16,13 @@ Backend that ingests journalist quote requests (HARO emails + Featured.com Premi
 
 `/orgs/opportunities/next` is the only refresh path. Each call:
 1. `selectUnscoredBatch` — picks at most **10** Gold clusters with NO row in `quote_priorities` for the exact `brand_ids[]` tuple. Anti-join via `LEFT JOIN ... IS NULL`. Filters expired `canonical_deadline`. Ordered by `first_seen_at ASC` for determinism.
-2. **If batch empty** → `ingestFeaturedToSilver`: refetch Featured `/opportunities-list` and upsert into silver. Idempotent on `external_id` natural key — repeat calls when Featured has published nothing new are cheap no-ops. Re-run `selectUnscoredBatch` after ingest.
+2. **If batch empty** → `ingestFeaturedToSilver`: refetch Featured `/opportunities-list` and upsert into silver. Idempotent on `external_id` natural key. Re-run `selectUnscoredBatch` after ingest.
 3. `scoreUnscored` — **one** chat-service call `POST /orgs/rag/score { documents, brandIds }` for the whole batch. Multi-brand tuple, not per-brand fan-out (DIS-67 enables this natively).
 4. `selectBestNonPitched` — SELECT MAX(score) above `SCORE_THRESHOLD` (default 0.5), filtering `quote_pitches` blocking rows for the same tuple (campaign-scoped if `campaignId` provided). Tie-break: `first_seen_at ASC` (oldest cluster wins).
 
 Featured is fetched ONLY when the consumer has fully drained the silver pool for the brand-set tuple. Natural backpressure: high-throughput callers consume what landed in silver before triggering an upstream refetch. No wall-clock TTL — Featured publication latency is implicit in the consumption cadence.
+
+**Negative-cache shortcut.** When a refetch ingests 0 new silvers (i.e. Featured returned only opportunities we'd already seen via `external_id`), `ingestFeaturedToSilver` records the empty-result and short-circuits the Featured HTTP call on subsequent /next invocations for `EMPTY_INGEST_SUSPEND_MS` (60s). This stops a saturated catalog from re-hammering Featured + the per-opp `attachOrCreateCluster` loop on every /next tick. The suspension clears automatically the first time a fetch produces ≥1 new silver (i.e. Featured has new content again). This is NOT a generic TTL — it only fires after explicit "we just learned there is nothing new" evidence.
 
 **Invariants:**
 - Bronze immutable (no UPDATE; only INSERT … ON CONFLICT DO NOTHING).

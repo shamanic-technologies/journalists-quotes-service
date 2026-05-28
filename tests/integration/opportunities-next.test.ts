@@ -31,6 +31,7 @@ import {
   type MockFeaturedState,
 } from "../helpers/mock-featured.js";
 import { _resetFeaturedClientState } from "../../src/lib/featured-client.js";
+import { _resetEmptyIngestSuspension } from "../../src/lib/opportunity-pipeline.js";
 import { ragScore } from "../../src/lib/chat-client.js";
 
 vi.mock("../../src/lib/key-service-client.js", () => ({
@@ -66,6 +67,7 @@ describe("POST /orgs/opportunities/next", () => {
   });
   beforeEach(async () => {
     _resetFeaturedClientState();
+    _resetEmptyIngestSuspension();
     vi.mocked(ragScore).mockClear();
     await cleanTestData();
     state = createMockState();
