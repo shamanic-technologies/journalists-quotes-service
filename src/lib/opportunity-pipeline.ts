@@ -1,4 +1,4 @@
-import { and, eq, inArray, or, sql as drizzleSql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql as drizzleSql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   providerQuoteRequests,
@@ -97,10 +97,22 @@ function featuredExternalId(o: FeaturedOpportunity): string {
   return computeFingerprint(o.opportunity ?? "", o.mediaOutlet);
 }
 
+// In-memory TTL cache: skip Featured `/opportunities-list` if it was
+// fetched + flushed to silver for this org within the window. Single
+// Railway replica today; if scaling out, replace with DB column.
+const FEATURED_INGEST_TTL_MS = 5 * 60 * 1000;
+const featuredIngestCache = new Map<string, number>();
+
+export function _resetFeaturedIngestCache() {
+  featuredIngestCache.clear();
+}
+
 /**
  * Fetch live Featured opportunities and write through to silver +
  * cluster into Gold via fingerprint. Idempotent on
- * (provider, ingestion_channel, external_id).
+ * (provider, ingestion_channel, external_id). Skips the upstream
+ * Featured fetch when the same org was ingested within
+ * FEATURED_INGEST_TTL_MS.
  */
 export async function ingestFeaturedToSilver(args: {
   orgId: string;
@@ -110,6 +122,11 @@ export async function ingestFeaturedToSilver(args: {
   buildClient: BuildFeaturedClient;
 }): Promise<void> {
   const { orgId, userId, runId, callerPath, buildClient } = args;
+
+  const lastFetched = featuredIngestCache.get(orgId);
+  if (lastFetched != null && Date.now() - lastFetched < FEATURED_INGEST_TTL_MS) {
+    return;
+  }
 
   let credentials: FeaturedCredentials;
   try {
@@ -141,7 +158,6 @@ export async function ingestFeaturedToSilver(args: {
   const insertableOpps = featuredOpps.filter(
     (o) => typeof o.opportunity === "string" && o.opportunity.length > 0
   );
-  if (insertableOpps.length === 0) return;
 
   for (const o of insertableOpps) {
     const text = o.opportunity!;
@@ -182,6 +198,8 @@ export async function ingestFeaturedToSilver(args: {
         ],
       });
   }
+
+  featuredIngestCache.set(orgId, Date.now());
 }
 
 interface SilverRow {
@@ -225,22 +243,191 @@ export function pickRepresentativeSilver<T extends SilverRow>(rows: T[]): T {
   return others[0];
 }
 
+const UNSCORED_BATCH_SIZE = 10;
+
 /**
- * Return every Gold cluster (quote_opportunities) reachable from the
- * org's silver pool (own org_id OR SHARED_EMAIL_ORG_ID), collapsed to
- * one row per Gold id via pickRepresentativeSilver. Each Gold row is
- * annotated with the latest pitchStatus seen for the brandSet — exact
- * canonical-sorted match. When campaignId is provided, status scope
- * narrows to that campaign.
+ * Pick up to UNSCORED_BATCH_SIZE Gold clusters reachable from the
+ * org's silver pool that have NO row in quote_priorities for the
+ * exact brand-set tuple (LEFT JOIN ... IS NULL). Filters out
+ * expired (canonical_deadline < now()) clusters.
+ *
+ * Returned rows are the minimum needed for ragScore: opportunityId +
+ * text. The /reply path uses pickRepresentativeSilver elsewhere — this
+ * helper is a scoring-batch picker, not a UI-row builder.
  */
-export async function fetchEligibleOpportunities(args: {
+async function selectUnscoredBatch(
+  orgId: string,
+  brandIds: string[]
+): Promise<{ opportunityId: string; opportunityText: string }[]> {
+  const rows = await db
+    .select({
+      opportunityId: quoteOpportunities.id,
+      opportunityText: quoteOpportunities.canonicalText,
+    })
+    .from(quoteOpportunities)
+    .leftJoin(
+      quotePriorities,
+      and(
+        eq(quotePriorities.quoteOpportunityId, quoteOpportunities.id),
+        eq(quotePriorities.brandIds, brandIds)
+      )
+    )
+    .where(
+      and(
+        isNull(quotePriorities.quoteOpportunityId),
+        or(
+          drizzleSql`${quoteOpportunities.canonicalDeadline} IS NULL`,
+          drizzleSql`${quoteOpportunities.canonicalDeadline} > now()`
+        ),
+        drizzleSql`EXISTS (SELECT 1 FROM ${providerQuoteRequests} WHERE ${providerQuoteRequests.quoteOpportunityId} = ${quoteOpportunities.id} AND (${providerQuoteRequests.orgId} = ${orgId}::uuid OR ${providerQuoteRequests.orgId} = ${SHARED_EMAIL_ORG_ID}::uuid))`
+      )
+    )
+    .orderBy(quoteOpportunities.firstSeenAt)
+    .limit(UNSCORED_BATCH_SIZE);
+
+  return rows;
+}
+
+/**
+ * Score a batch of unscored opportunities against the brand-set tuple
+ * via a single chat-service call (DIS-67 native multi-brand). Persists
+ * to Gold (`quote_priorities`) keyed by (quote_opportunity_id, brand_ids[]).
+ * Idempotent: upsert via onConflictDoUpdate.
+ */
+async function scoreUnscored(args: {
+  candidates: { opportunityId: string; opportunityText: string }[];
   orgId: string;
   brandIds: string[];
   campaignId?: string;
-}): Promise<EligibleOpportunity[]> {
-  const { orgId, brandIds, campaignId } = args;
+  userId?: string;
+  runId?: string;
+}): Promise<void> {
+  const { candidates, orgId, brandIds, campaignId, userId, runId } = args;
+  if (candidates.length === 0) return;
 
-  const silverRows = await db
+  const response = await ragScore(
+    {
+      documents: candidates.map((c) => ({
+        id: c.opportunityId,
+        text: c.opportunityText,
+      })),
+      brandIds,
+    },
+    orgId,
+    userId,
+    runId
+  );
+
+  if (response.results.length === 0) return;
+
+  await db
+    .insert(quotePriorities)
+    .values(
+      response.results.map((r) => ({
+        quoteOpportunityId: r.id,
+        brandIds,
+        campaignId: campaignId ?? null,
+        score: r.score.toFixed(2),
+        whyRelevant: r.whyRelevant ?? null,
+        scoredByRunId: runId ?? null,
+        orgId,
+      }))
+    )
+    .onConflictDoUpdate({
+      target: [
+        quotePriorities.quoteOpportunityId,
+        quotePriorities.brandIds,
+      ],
+      set: {
+        score: drizzleSql`excluded.score`,
+        whyRelevant: drizzleSql`excluded.why_relevant`,
+        scoredAt: drizzleSql`now()`,
+        scoredByRunId: drizzleSql`excluded.scored_by_run_id`,
+        campaignId: drizzleSql`excluded.campaign_id`,
+      },
+    });
+}
+
+/**
+ * Return the single best Gold cluster for (orgId, brandIds, campaignId?):
+ *   - score >= scoreThreshold
+ *   - canonical_deadline > now() OR NULL
+ *   - no blocking quote_pitches row on the EXACT brand-set tuple
+ *     (campaign-scoped if campaignId provided, brand-only otherwise)
+ *   - at least one silver row in the org's pool (own or SHARED_EMAIL_ORG_ID)
+ *
+ * Tie-break on score: oldest Gold cluster wins (first_seen_at ASC). Returns
+ * null when nothing eligible remains.
+ */
+async function selectBestNonPitched(args: {
+  orgId: string;
+  brandIds: string[];
+  campaignId?: string;
+  scoreThreshold: number;
+}): Promise<RankedOpportunity | null> {
+  const { orgId, brandIds, campaignId, scoreThreshold } = args;
+
+  // Anti-join sub-select: which Gold cluster ids are blocked by a pitch?
+  const pitchScope = campaignId
+    ? and(
+        eq(quotePitches.brandIds, brandIds),
+        eq(quotePitches.campaignId, campaignId),
+        inArray(quotePitches.status, BLOCK_STATUSES)
+      )
+    : and(
+        eq(quotePitches.brandIds, brandIds),
+        inArray(quotePitches.status, BLOCK_STATUSES)
+      );
+
+  const blockedRows = await db
+    .selectDistinct({ id: quotePitches.quoteOpportunityId })
+    .from(quotePitches)
+    .where(pitchScope);
+  const blockedIds = blockedRows
+    .map((r) => r.id)
+    .filter((id): id is string => id != null);
+
+  const candidates = await db
+    .select({
+      opportunityId: quoteOpportunities.id,
+      canonicalText: quoteOpportunities.canonicalText,
+      canonicalDeadline: quoteOpportunities.canonicalDeadline,
+      score: quotePriorities.score,
+      whyRelevant: quotePriorities.whyRelevant,
+    })
+    .from(quotePriorities)
+    .innerJoin(
+      quoteOpportunities,
+      eq(quoteOpportunities.id, quotePriorities.quoteOpportunityId)
+    )
+    .where(
+      and(
+        eq(quotePriorities.brandIds, brandIds),
+        drizzleSql`${quotePriorities.score} >= ${scoreThreshold.toFixed(2)}::numeric`,
+        or(
+          drizzleSql`${quoteOpportunities.canonicalDeadline} IS NULL`,
+          drizzleSql`${quoteOpportunities.canonicalDeadline} > now()`
+        ),
+        drizzleSql`EXISTS (SELECT 1 FROM ${providerQuoteRequests} WHERE ${providerQuoteRequests.quoteOpportunityId} = ${quoteOpportunities.id} AND (${providerQuoteRequests.orgId} = ${orgId}::uuid OR ${providerQuoteRequests.orgId} = ${SHARED_EMAIL_ORG_ID}::uuid))`,
+        blockedIds.length > 0
+          ? drizzleSql`${quoteOpportunities.id} NOT IN (${drizzleSql.join(
+              blockedIds.map((id) => drizzleSql`${id}::uuid`),
+              drizzleSql`, `
+            )})`
+          : drizzleSql`TRUE`
+      )
+    )
+    .orderBy(
+      drizzleSql`${quotePriorities.score} DESC`,
+      drizzleSql`${quoteOpportunities.firstSeenAt} ASC`
+    )
+    .limit(1);
+
+  if (candidates.length === 0) return null;
+  const best = candidates[0];
+
+  // Hydrate the representative silver row for outbound delivery hints.
+  const silvers = await db
     .select({
       id: providerQuoteRequests.id,
       provider: providerQuoteRequests.provider,
@@ -259,192 +446,85 @@ export async function fetchEligibleOpportunities(args: {
     })
     .from(providerQuoteRequests)
     .where(
-      or(
-        eq(providerQuoteRequests.orgId, orgId),
-        eq(providerQuoteRequests.orgId, SHARED_EMAIL_ORG_ID)
+      and(
+        or(
+          eq(providerQuoteRequests.orgId, orgId),
+          eq(providerQuoteRequests.orgId, SHARED_EMAIL_ORG_ID)
+        ),
+        eq(providerQuoteRequests.quoteOpportunityId, best.opportunityId)
       )
     );
 
-  const grouped = new Map<string, SilverRow[]>();
-  for (const r of silverRows) {
-    if (!r.quoteOpportunityId) continue;
-    const list = grouped.get(r.quoteOpportunityId) ?? [];
-    list.push(r);
-    grouped.set(r.quoteOpportunityId, list);
-  }
+  if (silvers.length === 0) return null;
+  const rep = pickRepresentativeSilver(silvers);
 
-  if (grouped.size === 0) return [];
-
-  const opportunityIds = Array.from(grouped.keys());
-
-  const goldRows = await db
-    .select({
-      id: quoteOpportunities.id,
-      canonicalText: quoteOpportunities.canonicalText,
-      canonicalOutlet: quoteOpportunities.canonicalOutlet,
-      canonicalDeadline: quoteOpportunities.canonicalDeadline,
-    })
-    .from(quoteOpportunities)
-    .where(inArray(quoteOpportunities.id, opportunityIds));
-
-  const goldById = new Map(goldRows.map((g) => [g.id, g]));
-
-  // Pitch lookup: exact-match on brand_ids canonical-sorted.
-  const pitchScope = campaignId
-    ? and(
-        eq(quotePitches.brandIds, brandIds),
-        eq(quotePitches.campaignId, campaignId),
-        inArray(quotePitches.quoteOpportunityId, opportunityIds)
-      )
-    : and(
-        eq(quotePitches.brandIds, brandIds),
-        inArray(quotePitches.quoteOpportunityId, opportunityIds)
-      );
-
-  const pitches = await db
-    .select({
-      quoteOpportunityId: quotePitches.quoteOpportunityId,
-      status: quotePitches.status,
-      updatedAt: quotePitches.updatedAt,
-    })
-    .from(quotePitches)
-    .where(pitchScope);
-
-  const latestByGold = new Map<
-    string,
-    { status: PitchStatusValue; updatedAt: Date }
-  >();
-  for (const p of pitches) {
-    if (!p.quoteOpportunityId) continue;
-    const prev = latestByGold.get(p.quoteOpportunityId);
-    if (!prev || prev.updatedAt < p.updatedAt) {
-      latestByGold.set(p.quoteOpportunityId, {
-        status: p.status,
-        updatedAt: p.updatedAt,
-      });
-    }
-  }
-
-  const out: EligibleOpportunity[] = [];
-  for (const [goldId, silvers] of grouped) {
-    const gold = goldById.get(goldId);
-    if (!gold) continue;
-    const rep = pickRepresentativeSilver(silvers);
-    out.push({
-      opportunityId: goldId,
-      representativeSilverId: rep.id,
-      provider: rep.provider,
-      ingestionChannel: rep.ingestionChannel,
-      featuredQuestionId: rep.featuredQuestionId,
-      mediaOutlet: rep.mediaOutlet ?? gold.canonicalOutlet,
-      journalistName: rep.journalistName,
-      opportunityText: rep.opportunityText ?? gold.canonicalText,
-      deadline: rep.deadline ?? gold.canonicalDeadline,
-      pitchUrl: rep.pitchUrl,
-      pitchEmail: rep.pitchEmail,
-      category: rep.category,
-      pitchStatus: latestByGold.get(goldId)?.status ?? null,
-    });
-  }
-
-  return out;
-}
-
-const RAG_SCORE_BATCH_SIZE = 100;
-
-function chunk<T>(arr: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) {
-    out.push(arr.slice(i, i + size));
-  }
-  return out;
+  return {
+    opportunityId: best.opportunityId,
+    representativeSilverId: rep.id,
+    provider: rep.provider,
+    ingestionChannel: rep.ingestionChannel,
+    featuredQuestionId: rep.featuredQuestionId,
+    mediaOutlet: rep.mediaOutlet,
+    journalistName: rep.journalistName,
+    opportunityText: rep.opportunityText ?? best.canonicalText,
+    deadline: rep.deadline ?? best.canonicalDeadline,
+    pitchUrl: rep.pitchUrl,
+    pitchEmail: rep.pitchEmail,
+    category: rep.category,
+    pitchStatus: null,
+    score: Number(best.score),
+    whyRelevant: best.whyRelevant,
+  };
 }
 
 /**
- * Rank Gold-level candidates against the brandSet. Score is per
- * (opportunity, brandSet) — one row per opportunity. Persisted into
- * quote_priorities keyed by (quote_opportunity_id, brand_ids[]).
+ * One /next pipeline call: ingest fresh Featured (TTL-gated), score
+ * at most UNSCORED_BATCH_SIZE unscored Gold clusters for the
+ * brand-set, then return the single best non-pitched candidate.
+ *
+ * No re-scoring: opportunities already in quote_priorities for this
+ * exact brand-set tuple are skipped.
  */
-export async function rankOpportunities(args: {
-  candidates: EligibleOpportunity[];
+export async function pickNextOpportunity(args: {
   orgId: string;
   brandIds: string[];
   campaignId?: string;
   userId?: string;
   runId?: string;
   scoreThreshold: number;
-}): Promise<RankedOpportunity[]> {
+  callerPath: string;
+  buildClient: BuildFeaturedClient;
+}): Promise<RankedOpportunity | null> {
   const {
-    candidates,
     orgId,
     brandIds,
     campaignId,
     userId,
     runId,
     scoreThreshold,
+    callerPath,
+    buildClient,
   } = args;
 
-  if (candidates.length === 0) return [];
+  await ingestFeaturedToSilver({
+    orgId,
+    userId,
+    runId,
+    callerPath,
+    buildClient,
+  });
 
-  const batches = chunk(candidates, RAG_SCORE_BATCH_SIZE);
-  const batchResponses = await Promise.all(
-    batches.map((batch) =>
-      ragScore(
-        {
-          documents: batch.map((c) => ({
-            id: c.opportunityId,
-            text: c.opportunityText,
-          })),
-          brandIds,
-        },
-        orgId,
-        userId,
-        runId
-      )
-    )
-  );
-  const mergedResults = batchResponses.flatMap((r) => r.results);
-
-  if (mergedResults.length > 0) {
-    await db
-      .insert(quotePriorities)
-      .values(
-        mergedResults.map((r) => ({
-          quoteOpportunityId: r.id,
-          brandIds,
-          campaignId: campaignId ?? null,
-          score: r.score.toFixed(2),
-          whyRelevant: r.whyRelevant ?? null,
-          scoredByRunId: runId ?? null,
-          orgId,
-        }))
-      )
-      .onConflictDoUpdate({
-        target: [
-          quotePriorities.quoteOpportunityId,
-          quotePriorities.brandIds,
-        ],
-        set: {
-          score: drizzleSql`excluded.score`,
-          whyRelevant: drizzleSql`excluded.why_relevant`,
-          scoredAt: drizzleSql`now()`,
-          scoredByRunId: drizzleSql`excluded.scored_by_run_id`,
-          campaignId: drizzleSql`excluded.campaign_id`,
-        },
-      });
+  const unscored = await selectUnscoredBatch(orgId, brandIds);
+  if (unscored.length > 0) {
+    await scoreUnscored({
+      candidates: unscored,
+      orgId,
+      brandIds,
+      campaignId,
+      userId,
+      runId,
+    });
   }
 
-  const resultById = new Map(mergedResults.map((r) => [r.id, r]));
-
-  return candidates
-    .map((c) => {
-      const result = resultById.get(c.opportunityId);
-      return {
-        ...c,
-        score: result?.score ?? 0,
-        whyRelevant: result?.whyRelevant ?? null,
-      };
-    })
-    .filter((c) => c.score >= scoreThreshold)
-    .sort((a, b) => b.score - a.score);
+  return selectBestNonPitched({ orgId, brandIds, campaignId, scoreThreshold });
 }

@@ -172,14 +172,6 @@ export const OpportunityReplyRequestSchema = z
   })
   .openapi("OpportunityReplyRequest");
 
-export const OpportunityRankedRequestSchema = z
-  .object({
-    campaignId: z.string().uuid().optional(),
-    limit: z.number().int().min(1).max(50).optional(),
-    offset: z.number().int().min(0).optional(),
-  })
-  .openapi("OpportunityRankedRequest");
-
 export const PitchStatusSchema = z
   .enum([
     "drafted",
@@ -213,10 +205,6 @@ export const FullQuoteOpportunitySchema = z
   })
   .openapi("FullQuoteOpportunity");
 
-export const RankedOpportunitySchema = FullQuoteOpportunitySchema.extend({
-  pitchStatus: PitchStatusSchema.nullable(),
-}).openapi("RankedOpportunity");
-
 export const OpportunityNextResponseSchema = z
   .discriminatedUnion("found", [
     z.object({ found: z.literal(false) }),
@@ -227,15 +215,6 @@ export const OpportunityNextResponseSchema = z
     }),
   ])
   .openapi("OpportunityNextResponse");
-
-export const OpportunityRankedResponseSchema = z
-  .object({
-    status: z.literal("ok"),
-    opportunities: z.array(RankedOpportunitySchema),
-    total: z.number().int(),
-    brandIds: z.array(z.string().uuid()),
-  })
-  .openapi("OpportunityRankedResponse");
 
 export const OpportunityReplyResponseSchema = z
   .object({
@@ -358,38 +337,6 @@ registry.registerPath({
     },
     400: {
       description: "Validation error (missing/invalid x-brand-id header, bad body)",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    502: {
-      description: "Upstream service unavailable (key-service, Featured)",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-  },
-});
-
-registry.registerPath({
-  method: "post",
-  path: "/orgs/opportunities/ranked",
-  summary:
-    "Return paginated top-N Gold-cluster opportunities for the brand-set. Brand identity via x-brand-id header (CSV when plural). RAG-scored, paginated, annotated with the latest pitchStatus seen for the exact brand-set. Used by the HITL dashboard / public report queue. No exclusion — pitchStatus is surfaced as metadata.",
-  security: [{ [apiKeyAuth.name]: [] }],
-  request: {
-    headers: orgHeaders,
-    body: {
-      content: {
-        "application/json": { schema: OpportunityRankedRequestSchema },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: "Ranked opportunities above SCORE_THRESHOLD, sorted by score desc",
-      content: {
-        "application/json": { schema: OpportunityRankedResponseSchema },
-      },
-    },
-    400: {
-      description: "Validation error",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
     502: {

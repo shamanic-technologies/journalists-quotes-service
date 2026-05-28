@@ -5,7 +5,7 @@ Backend service that matches journalist quote requests (HARO email digests + Fea
 Three workflows:
 
 - **WF1 — Email inbound ingestion**: `email-gateway-service` HMAC-pushes inbound emails into `/webhooks/inbound-email`. `/internal/process-inbound-emails` (workflow-service cron) drains the bronze table, dispatches to the per-provider parser, writes silver `provider_quote_requests`, attaches to gold `quote_opportunities` via fingerprint clustering.
-- **WF2 — Opportunity catalog**: `POST /orgs/opportunities/next` returns the single highest-scored Gold-cluster opportunity not yet pitched for the brand-set (parity with `lead-service /orgs/buffer/next`). `POST /orgs/opportunities/ranked` returns the paginated list of all Gold opportunities above `SCORE_THRESHOLD`, annotated with the latest `pitchStatus`. Both ingest fresh Featured.com opportunities into silver + Gold cluster via fingerprint, then RAG-score via chat-service. **Brand identity flows via `x-brand-id` CSV header**, canonicalized server-side (deduplicated + sorted). All `(opportunity, brandSet)` is the keying unit.
+- **WF2 — Opportunity catalog**: `POST /orgs/opportunities/next` returns the single highest-scored Gold-cluster opportunity not yet pitched for the brand-set (parity with `lead-service /orgs/buffer/next`). The handler is **score-as-you-go**: ingest fresh Featured.com → silver (TTL 5min in-memory cache per org), pick at most 10 Gold clusters with NO row in `quote_priorities` for the exact brand-set tuple, score those 10 in a single multi-brand chat-service call, upsert into `quote_priorities`, then SELECT the best non-pitched. Opportunities already scored for the tuple are reused — never re-scored. **Brand identity flows via `x-brand-id` CSV header**, canonicalized server-side (deduplicated + sorted). All `(opportunity, brandSet)` is the keying unit.
 - **WF3 — Submit reply**: `POST /orgs/opportunities/:id/reply` — `:id` = Gold cluster id. The service picks a silver "representative" row (Featured-API preferred, else most recently fetched email) and dispatches via `FeaturedClient.submitAnswer` or `email-gateway-service /orgs/send`. Pitch content is supplied by the caller (DAG). Idempotency: exact-match on `(quote_opportunity_id, sorted brand_ids[])` — co-brand `[A,B]` is distinct from solo `[A]`.
 
 Pitch drafting is **not** in this service. The DAG calls `content-generation-service` (e.g. `POST /generate-expert-quote-pitch` or `POST /generate` with template of its choice) and forwards the result to `POST /orgs/opportunities/:id/reply`.
@@ -36,7 +36,7 @@ The server boots on `PORT` (default `3050`) and runs Drizzle migrations automati
 | `RUNS_SERVICE_URL` / `RUNS_SERVICE_API_KEY` | Run tracking |
 | `KEY_SERVICE_URL` / `KEY_SERVICE_API_KEY` | Featured creds resolution — reads two scalar platform keys (`featured-username`, `featured-password`) |
 | `BRAND_SERVICE_URL` / `BRAND_SERVICE_API_KEY` | Brand metadata + logo (Featured profile bootstrap) |
-| `CHAT_SERVICE_URL` / `CHAT_SERVICE_API_KEY` | RAG scoring (per-brand loop + mean aggregate across brand-set) |
+| `CHAT_SERVICE_URL` / `CHAT_SERVICE_API_KEY` | RAG scoring — single multi-brand call per /next tick (`POST /orgs/rag/score` with body `{ documents, brandIds }`) |
 | `EMAIL_GATEWAY_SERVICE_URL` / `EMAIL_GATEWAY_SERVICE_API_KEY` | WF3 email_reply dispatch via `POST /orgs/send` |
 | `BILLING_SERVICE_URL` / `BILLING_SERVICE_API_KEY` | featured-api-pitch-submit credit gate |
 | `JQS_INBOUND_HMAC_SECRET` | Shared secret email-gateway uses to sign pushes into `/webhooks/inbound-email` (300s replay window, sha256) |
@@ -50,8 +50,7 @@ The server boots on `PORT` (default `3050`) and runs Drizzle migrations automati
 | `GET` | `/openapi.json` | Public | OpenAPI 3 spec |
 | `POST` | `/webhooks/inbound-email` | HMAC `x-eg-signature` | Receive Postmark inbound payload pushed by email-gateway. Idempotent on `MessageID`. |
 | `POST` | `/internal/process-inbound-emails` | apiKey | Drain pending bronze emails, parse, write silver + gold cluster. |
-| `POST` | `/orgs/opportunities/next` | apiKey + orgId + x-brand-id | Single highest-scored Gold opportunity not yet pitched for the brand-set. Body: `{ campaignId? }`. Returns `{ found: true, opportunity, brandIds }` or `{ found: false }`. |
-| `POST` | `/orgs/opportunities/ranked` | apiKey + orgId + x-brand-id | Paginated Gold opportunities above `SCORE_THRESHOLD`. Body: `{ campaignId?, limit?, offset? }`. Annotates each with `pitchStatus` for the brand-set (no exclusion). |
+| `POST` | `/orgs/opportunities/next` | apiKey + orgId + x-brand-id | Single highest-scored Gold opportunity not yet pitched for the brand-set. Score-as-you-go: ingests fresh Featured, scores at most 10 unscored, returns best non-pitched. Body: `{ campaignId? }`. Returns `{ found: true, opportunity, brandIds }` or `{ found: false }`. |
 | `POST` | `/orgs/opportunities/:id/reply` | apiKey + orgId + x-brand-id | Submit pitch reply. `:id` = `quote_opportunities.id` (Gold). Body: `{ pitchContent, campaignId?, subject? }`. Service picks silver representative (Featured > most recent email). Idempotency: exact-match on `(quote_opportunity_id, sorted brand_ids[])`. Block statuses: `drafted, submitted, selected, published, not_selected`. |
 | `GET` | `/orgs/quote-requests` | apiKey + orgId | List silver rows. Filters: `?provider=`, `?ingestion_channel=`, `?campaign_id=` (returns rows pitched under that campaign). |
 | `GET` | `/orgs/quote-requests/:id` | apiKey + orgId | Single silver row. |
