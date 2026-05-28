@@ -634,6 +634,10 @@ export async function selectRankedPage(args: {
     });
   }
 
+  console.log(
+    `[journalists-quotes-service] /ranked orgId=${orgId} brandIds=${brandIds.join(",")} campaignId=${campaignId ?? "null"} limit=${limit} offset=${offset} total=${total} returned=${rows.length}`
+  );
+
   return { rows, total };
 }
 
@@ -674,12 +678,19 @@ export async function pickNextOpportunity(args: {
     buildClient,
   } = args;
 
+  const startedAt = Date.now();
+  const brandIdsLabel = brandIds.join(",");
+
   let unscored = await selectUnscoredBatch(orgId, brandIds);
+  console.log(
+    `[journalists-quotes-service] /next stage=unscored-batch orgId=${orgId} brandIds=${brandIdsLabel} campaignId=${campaignId ?? "null"} unscoredCount=${unscored.length}`
+  );
 
   if (unscored.length === 0) {
     // Silver pool exhausted for this brand-set tuple. Refetch Featured;
     // ingest is idempotent so this no-ops when nothing new has been
     // published since the last fetch.
+    const ingestStart = Date.now();
     await ingestFeaturedToSilver({
       orgId,
       userId,
@@ -688,9 +699,13 @@ export async function pickNextOpportunity(args: {
       buildClient,
     });
     unscored = await selectUnscoredBatch(orgId, brandIds);
+    console.log(
+      `[journalists-quotes-service] /next stage=featured-refetch orgId=${orgId} brandIds=${brandIdsLabel} unscoredAfterIngest=${unscored.length} ingestMs=${Date.now() - ingestStart}`
+    );
   }
 
   if (unscored.length > 0) {
+    const scoreStart = Date.now();
     await scoreUnscored({
       candidates: unscored,
       orgId,
@@ -699,7 +714,20 @@ export async function pickNextOpportunity(args: {
       userId,
       runId,
     });
+    console.log(
+      `[journalists-quotes-service] /next stage=scored orgId=${orgId} brandIds=${brandIdsLabel} scoredCount=${unscored.length} scoreMs=${Date.now() - scoreStart}`
+    );
   }
 
-  return selectBestNonPitched({ orgId, brandIds, campaignId, scoreThreshold });
+  const best = await selectBestNonPitched({
+    orgId,
+    brandIds,
+    campaignId,
+    scoreThreshold,
+  });
+  console.log(
+    `[journalists-quotes-service] /next stage=result orgId=${orgId} brandIds=${brandIdsLabel} campaignId=${campaignId ?? "null"} found=${best != null} score=${best?.score ?? "null"} totalMs=${Date.now() - startedAt}`
+  );
+
+  return best;
 }
