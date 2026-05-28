@@ -237,6 +237,18 @@ export const OpportunityRankedResponseSchema = z
   })
   .openapi("OpportunityRankedResponse");
 
+export const OpportunityStatsResponseSchema = z
+  .object({
+    silverPoolSize: z.number().int(),
+    scoredCount: z.number().int(),
+    eligibleCount: z.number().int(),
+    pitchedBlocking: z.number().int(),
+    expiredCount: z.number().int(),
+    bestEligibleScore: z.number().nullable(),
+    brandIds: z.array(z.string().uuid()),
+  })
+  .openapi("OpportunityStatsResponse");
+
 export const OpportunityReplyResponseSchema = z
   .object({
     status: z.enum([
@@ -390,6 +402,30 @@ registry.registerPath({
     },
     400: {
       description: "Validation error (missing/invalid x-brand-id header, bad body)",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/opportunities/stats",
+  summary:
+    "Brand-set scoped Gold catalog stats — silverPoolSize, scoredCount, eligibleCount, pitchedBlocking, expiredCount, bestEligibleScore. Pure-read (no scoring, no ingest). Brand identity via `x-brand-id` header (CSV when plural). When `campaign_id` query param is set, pitch-blocking + best-eligible scope to that campaign; otherwise brand-set wide.",
+  security: [{ [apiKeyAuth.name]: [] }],
+  request: {
+    headers: orgHeaders,
+    query: z.object({ campaign_id: z.string().uuid().optional() }),
+  },
+  responses: {
+    200: {
+      description: "Catalog stats for the brand-set tuple",
+      content: {
+        "application/json": { schema: OpportunityStatsResponseSchema },
+      },
+    },
+    400: {
+      description: "Validation error (missing/invalid x-brand-id header or campaign_id)",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
   },

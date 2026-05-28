@@ -70,16 +70,17 @@ async function seedScoredOpportunity(args: {
   return opp.id;
 }
 
+afterAll(async () => {
+  await cleanTestData();
+  await closeDb();
+});
+
 describe("POST /orgs/opportunities/ranked (pure-read)", () => {
   beforeAll(async () => {
     await cleanTestData();
   });
   beforeEach(async () => {
     await cleanTestData();
-  });
-  afterAll(async () => {
-    await cleanTestData();
-    await closeDb();
   });
 
   function app() {
@@ -387,5 +388,165 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
     const afterRows = await db.select().from(quotePriorities);
     expect(afterRows).toHaveLength(1);
     expect(afterRows[0].scoredAt.getTime()).toBe(beforeScoredAt.getTime());
+  });
+});
+
+describe("GET /orgs/opportunities/stats", () => {
+  beforeAll(async () => {
+    await cleanTestData();
+  });
+  beforeEach(async () => {
+    await cleanTestData();
+  });
+
+  function app() {
+    return createTestApp({});
+  }
+
+  it("returns zero counts for an empty catalog", async () => {
+    const res = await request(app())
+      .get("/orgs/opportunities/stats")
+      .set(AUTH_HEADERS);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      silverPoolSize: 0,
+      scoredCount: 0,
+      eligibleCount: 0,
+      pitchedBlocking: 0,
+      expiredCount: 0,
+      bestEligibleScore: null,
+      brandIds: [TEST_BRAND],
+    });
+  });
+
+  it("rejects when x-brand-id header missing", async () => {
+    const headers = { ...AUTH_HEADERS } as Record<string, string>;
+    delete headers["x-brand-id"];
+    const res = await request(app())
+      .get("/orgs/opportunities/stats")
+      .set(headers);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/x-brand-id/);
+  });
+
+  it("counts silver pool + scored + eligible + best score", async () => {
+    const high = await seedScoredOpportunity({
+      fingerprint: "fp-high",
+      text: "high signal",
+      externalId: "s-1",
+      featuredQuestionId: 5001,
+      brandIds: [TEST_BRAND],
+      score: 0.95,
+    });
+    // Below threshold — scored but not eligible.
+    await seedScoredOpportunity({
+      fingerprint: "fp-low",
+      text: "low signal",
+      externalId: "s-2",
+      featuredQuestionId: 5002,
+      brandIds: [TEST_BRAND],
+      score: 0.2,
+    });
+    // Other brand-set — not visible to brand A query.
+    await seedScoredOpportunity({
+      fingerprint: "fp-other",
+      text: "other tuple",
+      externalId: "s-3",
+      featuredQuestionId: 5003,
+      brandIds: [TEST_BRAND_B],
+      score: 0.9,
+    });
+
+    const res = await request(app())
+      .get("/orgs/opportunities/stats")
+      .set(AUTH_HEADERS);
+    expect(res.status).toBe(200);
+    expect(res.body.silverPoolSize).toBe(3);
+    expect(res.body.scoredCount).toBe(2); // brand-set filtered
+    expect(res.body.eligibleCount).toBe(1);
+    expect(res.body.pitchedBlocking).toBe(0);
+    expect(res.body.expiredCount).toBe(0);
+    expect(res.body.bestEligibleScore).toBeCloseTo(0.95);
+
+    // Pitch the high one — eligible drops.
+    const silverHigh = (
+      await db
+        .select()
+        .from(providerQuoteRequests)
+        .where(eq(providerQuoteRequests.externalId, "s-1"))
+    )[0];
+    await db.insert(quotePitches).values({
+      quoteRequestId: silverHigh.id,
+      quoteOpportunityId: high,
+      brandIds: [TEST_BRAND],
+      status: "submitted",
+      deliveryMethod: "featured_api",
+      orgId: TEST_ORG_A,
+    });
+
+    const res2 = await request(app())
+      .get("/orgs/opportunities/stats")
+      .set(AUTH_HEADERS);
+    expect(res2.body.eligibleCount).toBe(0);
+    expect(res2.body.pitchedBlocking).toBe(1);
+    expect(res2.body.bestEligibleScore).toBeNull();
+  });
+
+  it("counts expired opportunities separately + excludes them from eligible", async () => {
+    const past = new Date(Date.now() - 24 * 3600_000);
+    await seedScoredOpportunity({
+      fingerprint: "fp-expired",
+      text: "high signal expired",
+      externalId: "exp-1",
+      featuredQuestionId: 6001,
+      brandIds: [TEST_BRAND],
+      score: 0.9,
+      deadline: past,
+    });
+
+    const res = await request(app())
+      .get("/orgs/opportunities/stats")
+      .set(AUTH_HEADERS);
+    expect(res.body.expiredCount).toBe(1);
+    expect(res.body.eligibleCount).toBe(0);
+    expect(res.body.scoredCount).toBe(1);
+  });
+
+  it("scopes pitchedBlocking to the campaign when campaign_id is provided", async () => {
+    const opp = await seedScoredOpportunity({
+      fingerprint: "fp-camp",
+      text: "high signal camp",
+      externalId: "c-1",
+      featuredQuestionId: 7001,
+      brandIds: [TEST_BRAND],
+      score: 0.9,
+    });
+    const silver = (
+      await db
+        .select()
+        .from(providerQuoteRequests)
+        .where(eq(providerQuoteRequests.externalId, "c-1"))
+    )[0];
+    await db.insert(quotePitches).values({
+      quoteRequestId: silver.id,
+      quoteOpportunityId: opp,
+      campaignId: TEST_CAMPAIGN_A,
+      brandIds: [TEST_BRAND],
+      status: "submitted",
+      deliveryMethod: "featured_api",
+      orgId: TEST_ORG_A,
+    });
+
+    const sameCampaign = await request(app())
+      .get("/orgs/opportunities/stats?campaign_id=" + TEST_CAMPAIGN_A)
+      .set(AUTH_HEADERS);
+    expect(sameCampaign.body.pitchedBlocking).toBe(1);
+    expect(sameCampaign.body.eligibleCount).toBe(0);
+
+    const otherCampaign = await request(app())
+      .get("/orgs/opportunities/stats?campaign_id=" + TEST_CAMPAIGN_B)
+      .set(AUTH_HEADERS);
+    expect(otherCampaign.body.pitchedBlocking).toBe(0);
+    expect(otherCampaign.body.eligibleCount).toBe(1);
   });
 });

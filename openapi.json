@@ -236,6 +236,46 @@
           }
         }
       },
+      "OpportunityStatsResponse": {
+        "type": "object",
+        "properties": {
+          "silverPoolSize": {
+            "type": "integer"
+          },
+          "scoredCount": {
+            "type": "integer"
+          },
+          "eligibleCount": {
+            "type": "integer"
+          },
+          "pitchedBlocking": {
+            "type": "integer"
+          },
+          "expiredCount": {
+            "type": "integer"
+          },
+          "bestEligibleScore": {
+            "type": "number",
+            "nullable": true
+          },
+          "brandIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "required": [
+          "silverPoolSize",
+          "scoredCount",
+          "eligibleCount",
+          "pitchedBlocking",
+          "expiredCount",
+          "bestEligibleScore",
+          "brandIds"
+        ]
+      },
       "OpportunityReplyResponse": {
         "type": "object",
         "properties": {
@@ -855,6 +895,68 @@
           },
           "400": {
             "description": "Validation error (missing/invalid x-brand-id header, bad body)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/opportunities/stats": {
+      "get": {
+        "summary": "Brand-set scoped Gold catalog stats — silverPoolSize, scoredCount, eligibleCount, pitchedBlocking, expiredCount, bestEligibleScore. Pure-read (no scoring, no ingest). Brand identity via `x-brand-id` header (CSV when plural). When `campaign_id` query param is set, pitch-blocking + best-eligible scope to that campaign; otherwise brand-set wide.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": false,
+            "name": "campaign_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-org-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted). All ranking, score caching, and pitch idempotency keys use the canonical brand_ids[] set."
+            },
+            "required": true,
+            "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted). All ranking, score caching, and pitch idempotency keys use the canonical brand_ids[] set.",
+            "name": "x-brand-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Catalog stats for the brand-set tuple",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpportunityStatsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error (missing/invalid x-brand-id header or campaign_id)",
             "content": {
               "application/json": {
                 "schema": {
