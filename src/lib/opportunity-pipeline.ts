@@ -478,6 +478,180 @@ async function selectBestNonPitched(args: {
 }
 
 /**
+ * Pure-read paginated ranked list for the brand-set.
+ *
+ *   - Reads from `quote_priorities` (Gold scored projection) joined to
+ *     `quote_opportunities` (silver canonical). Annotates each row with
+ *     the latest `pitchStatus` seen for the brand-set (campaign-scoped
+ *     when campaignId provided, else any campaign).
+ *   - NO scoring, NO Featured ingest. Opportunities not yet scored for
+ *     this brand-set tuple are simply absent from the response — the
+ *     `/next` write-path is what fills them.
+ *   - Filters expired `canonical_deadline`. Includes pitched
+ *     opportunities (caller decides what to do with `pitchStatus`).
+ *
+ * Returns `{ rows, total }` where total is the unpaginated count.
+ */
+export async function selectRankedPage(args: {
+  orgId: string;
+  brandIds: string[];
+  campaignId?: string;
+  limit: number;
+  offset: number;
+  scoreThreshold: number;
+}): Promise<{ rows: RankedOpportunity[]; total: number }> {
+  const { orgId, brandIds, campaignId, limit, offset, scoreThreshold } = args;
+
+  const filter = and(
+    eq(quotePriorities.brandIds, brandIds),
+    drizzleSql`${quotePriorities.score} >= ${scoreThreshold.toFixed(2)}::numeric`,
+    or(
+      drizzleSql`${quoteOpportunities.canonicalDeadline} IS NULL`,
+      drizzleSql`${quoteOpportunities.canonicalDeadline} > now()`
+    ),
+    drizzleSql`EXISTS (SELECT 1 FROM ${providerQuoteRequests} WHERE ${providerQuoteRequests.quoteOpportunityId} = ${quoteOpportunities.id} AND (${providerQuoteRequests.orgId} = ${orgId}::uuid OR ${providerQuoteRequests.orgId} = ${SHARED_EMAIL_ORG_ID}::uuid))`
+  );
+
+  const [totalRow] = await db
+    .select({ n: drizzleSql<number>`count(*)::int` })
+    .from(quotePriorities)
+    .innerJoin(
+      quoteOpportunities,
+      eq(quoteOpportunities.id, quotePriorities.quoteOpportunityId)
+    )
+    .where(filter);
+  const total = totalRow?.n ?? 0;
+
+  if (total === 0) {
+    return { rows: [], total: 0 };
+  }
+
+  const page = await db
+    .select({
+      opportunityId: quoteOpportunities.id,
+      canonicalText: quoteOpportunities.canonicalText,
+      canonicalDeadline: quoteOpportunities.canonicalDeadline,
+      score: quotePriorities.score,
+      whyRelevant: quotePriorities.whyRelevant,
+    })
+    .from(quotePriorities)
+    .innerJoin(
+      quoteOpportunities,
+      eq(quoteOpportunities.id, quotePriorities.quoteOpportunityId)
+    )
+    .where(filter)
+    .orderBy(
+      drizzleSql`${quotePriorities.score} DESC`,
+      drizzleSql`${quoteOpportunities.firstSeenAt} ASC`
+    )
+    .limit(limit)
+    .offset(offset);
+
+  if (page.length === 0) {
+    return { rows: [], total };
+  }
+
+  const opportunityIds = page.map((p) => p.opportunityId);
+
+  const silvers = await db
+    .select({
+      id: providerQuoteRequests.id,
+      provider: providerQuoteRequests.provider,
+      ingestionChannel: providerQuoteRequests.ingestionChannel,
+      featuredQuestionId: providerQuoteRequests.featuredQuestionId,
+      mediaOutlet: providerQuoteRequests.mediaOutlet,
+      journalistName: providerQuoteRequests.journalistName,
+      opportunityText: providerQuoteRequests.opportunityText,
+      deadline: providerQuoteRequests.deadline,
+      pitchUrl: providerQuoteRequests.pitchUrl,
+      pitchEmail: providerQuoteRequests.pitchEmail,
+      category: providerQuoteRequests.category,
+      quoteOpportunityId: providerQuoteRequests.quoteOpportunityId,
+      fetchedAt: providerQuoteRequests.fetchedAt,
+      isCanonical: providerQuoteRequests.isCanonical,
+    })
+    .from(providerQuoteRequests)
+    .where(
+      and(
+        or(
+          eq(providerQuoteRequests.orgId, orgId),
+          eq(providerQuoteRequests.orgId, SHARED_EMAIL_ORG_ID)
+        ),
+        inArray(providerQuoteRequests.quoteOpportunityId, opportunityIds)
+      )
+    );
+
+  const silversByOppId = new Map<string, typeof silvers>();
+  for (const s of silvers) {
+    if (!s.quoteOpportunityId) continue;
+    const list = silversByOppId.get(s.quoteOpportunityId) ?? [];
+    list.push(s);
+    silversByOppId.set(s.quoteOpportunityId, list);
+  }
+
+  const pitchScope = campaignId
+    ? and(
+        eq(quotePitches.brandIds, brandIds),
+        eq(quotePitches.campaignId, campaignId),
+        inArray(quotePitches.quoteOpportunityId, opportunityIds)
+      )
+    : and(
+        eq(quotePitches.brandIds, brandIds),
+        inArray(quotePitches.quoteOpportunityId, opportunityIds)
+      );
+
+  const pitches = await db
+    .select({
+      quoteOpportunityId: quotePitches.quoteOpportunityId,
+      status: quotePitches.status,
+      updatedAt: quotePitches.updatedAt,
+    })
+    .from(quotePitches)
+    .where(pitchScope);
+
+  const latestPitchByOppId = new Map<
+    string,
+    { status: PitchStatusValue; updatedAt: Date }
+  >();
+  for (const p of pitches) {
+    if (!p.quoteOpportunityId) continue;
+    const prev = latestPitchByOppId.get(p.quoteOpportunityId);
+    if (!prev || prev.updatedAt < p.updatedAt) {
+      latestPitchByOppId.set(p.quoteOpportunityId, {
+        status: p.status,
+        updatedAt: p.updatedAt,
+      });
+    }
+  }
+
+  const rows: RankedOpportunity[] = [];
+  for (const row of page) {
+    const rowSilvers = silversByOppId.get(row.opportunityId);
+    if (!rowSilvers || rowSilvers.length === 0) continue;
+    const rep = pickRepresentativeSilver(rowSilvers);
+    rows.push({
+      opportunityId: row.opportunityId,
+      representativeSilverId: rep.id,
+      provider: rep.provider,
+      ingestionChannel: rep.ingestionChannel,
+      featuredQuestionId: rep.featuredQuestionId,
+      mediaOutlet: rep.mediaOutlet,
+      journalistName: rep.journalistName,
+      opportunityText: rep.opportunityText ?? row.canonicalText,
+      deadline: rep.deadline ?? row.canonicalDeadline,
+      pitchUrl: rep.pitchUrl,
+      pitchEmail: rep.pitchEmail,
+      category: rep.category,
+      pitchStatus: latestPitchByOppId.get(row.opportunityId)?.status ?? null,
+      score: Number(row.score),
+      whyRelevant: row.whyRelevant,
+    });
+  }
+
+  return { rows, total };
+}
+
+/**
  * One /next pipeline call: ingest fresh Featured (TTL-gated), score
  * at most UNSCORED_BATCH_SIZE unscored Gold clusters for the
  * brand-set, then return the single best non-pitched candidate.
