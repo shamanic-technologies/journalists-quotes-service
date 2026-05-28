@@ -72,6 +72,88 @@ describe("POST /orgs/opportunities/next", () => {
     });
   }
 
+  it("re-points existing silver row to the freshly-created Gold cluster on EQRS-driven re-ingest (fingerprint drift fix)", async () => {
+    // Simulate legacy state: a silver row exists with external_id
+    // = pitchUrl, pointing at an OLD Gold cluster whose fingerprint
+    // hashed text differently than today's `computeFingerprint`.
+    const legacyText = "legacy signal expert query";
+    const legacyOutlet = "Legacy Outlet";
+    const externalId = "https://pitch.example.com/legacy-1";
+
+    const [legacyGold] = await db
+      .insert(quoteOpportunities)
+      .values({
+        fingerprint: "LEGACY-FINGERPRINT-HASH",
+        canonicalText: legacyText,
+        canonicalOutlet: legacyOutlet,
+      })
+      .returning();
+    const [legacySilver] = await db
+      .insert(providerQuoteRequests)
+      .values({
+        provider: "featured",
+        ingestionChannel: "api",
+        externalId,
+        opportunityText: legacyText,
+        mediaOutlet: legacyOutlet,
+        quoteOpportunityId: legacyGold.id,
+        fingerprint: "LEGACY-FINGERPRINT-HASH",
+        isCanonical: true,
+        orgId: TEST_ORG_A,
+      })
+      .returning();
+    // Pre-score the legacy Gold so /next's selectUnscoredBatch returns
+    // 0 → exhaust path → EQRS fetch → repoint logic fires.
+    await db.insert(quotePriorities).values({
+      quoteOpportunityId: legacyGold.id,
+      brandIds: [TEST_BRAND],
+      score: "0.40",
+      whyRelevant: "pre-seeded legacy score",
+      orgId: TEST_ORG_A,
+    });
+
+    // EQRS now returns the same external_id but with a TEXT that
+    // hashes to a different fingerprint under today's logic.
+    state.opportunities = [
+      makeOpportunity({
+        externalId,
+        featuredQuestionId: 7777,
+        opportunityText: "high signal modern expert query",
+        mediaOutlet: "Modern Outlet",
+      }),
+    ];
+
+    await request(app())
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+
+    // A new Gold cluster was created (modern fingerprint).
+    const golds = await db.select().from(quoteOpportunities);
+    expect(golds).toHaveLength(2);
+    const modernGold = golds.find(
+      (g) => g.fingerprint !== "LEGACY-FINGERPRINT-HASH"
+    );
+    expect(modernGold).toBeDefined();
+
+    // The silver row was REPOINTED to the new Gold cluster — not left
+    // orphaned at the legacy cluster.
+    const [updated] = await db
+      .select()
+      .from(providerQuoteRequests)
+      .where(eq(providerQuoteRequests.id, legacySilver.id));
+    expect(updated.quoteOpportunityId).toBe(modernGold!.id);
+    expect(updated.fingerprint).toBe(modernGold!.fingerprint);
+    expect(updated.opportunityText).toBe(
+      "high signal modern expert query"
+    );
+    expect(updated.mediaOutlet).toBe("Modern Outlet");
+    // Identity / provenance fields preserved.
+    expect(updated.externalId).toBe(externalId);
+    expect(updated.orgId).toBe(TEST_ORG_A);
+    expect(updated.provider).toBe("featured");
+  });
+
   it("dedupes EQRS rows with duplicate fingerprints in the same batch (Featured surfaces same question across multiple rows)", async () => {
     // Same opportunityText + mediaOutlet → same fingerprint. Featured
     // sometimes returns the same question under different external_ids
