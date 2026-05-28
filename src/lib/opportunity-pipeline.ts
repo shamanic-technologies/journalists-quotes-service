@@ -720,6 +720,138 @@ export async function selectRankedPage(args: {
 }
 
 /**
+ * Brand-set scoped Gold catalog stats. Pure-read (no scoring, no
+ * ingest). Used by the HITL dashboard "you have N opportunities"
+ * summary + for prod debugging of catalog growth.
+ *
+ * Definitions:
+ *   - silverPoolSize: count of provider_quote_requests for the org
+ *     (own or SHARED_EMAIL_ORG_ID), regardless of scoring state.
+ *   - scoredCount: count of quote_priorities rows for the brand-set
+ *     tuple (some may be below threshold).
+ *   - eligibleCount: scored above SCORE_THRESHOLD, deadline non-expired,
+ *     NOT in quote_pitches blocking states for the brand-set
+ *     (campaign-scoped if campaignId provided).
+ *   - pitchedBlocking: count of quote_pitches blocking rows for the
+ *     brand-set (campaign-scoped if campaignId provided).
+ *   - expiredCount: scored opportunities with canonical_deadline < now().
+ *   - bestEligibleScore: highest score among eligible rows, or null.
+ */
+export async function selectOpportunitiesStats(args: {
+  orgId: string;
+  brandIds: string[];
+  campaignId?: string;
+  scoreThreshold: number;
+}): Promise<{
+  silverPoolSize: number;
+  scoredCount: number;
+  eligibleCount: number;
+  pitchedBlocking: number;
+  expiredCount: number;
+  bestEligibleScore: number | null;
+}> {
+  const { orgId, brandIds, campaignId, scoreThreshold } = args;
+
+  const [silverRow] = await db
+    .select({ n: drizzleSql<number>`count(*)::int` })
+    .from(providerQuoteRequests)
+    .where(
+      or(
+        eq(providerQuoteRequests.orgId, orgId),
+        eq(providerQuoteRequests.orgId, SHARED_EMAIL_ORG_ID)
+      )
+    );
+
+  const [scoredRow] = await db
+    .select({ n: drizzleSql<number>`count(*)::int` })
+    .from(quotePriorities)
+    .where(eq(quotePriorities.brandIds, brandIds));
+
+  const [expiredRow] = await db
+    .select({ n: drizzleSql<number>`count(*)::int` })
+    .from(quotePriorities)
+    .innerJoin(
+      quoteOpportunities,
+      eq(quoteOpportunities.id, quotePriorities.quoteOpportunityId)
+    )
+    .where(
+      and(
+        eq(quotePriorities.brandIds, brandIds),
+        drizzleSql`${quoteOpportunities.canonicalDeadline} IS NOT NULL`,
+        drizzleSql`${quoteOpportunities.canonicalDeadline} < now()`
+      )
+    );
+
+  const pitchScope = campaignId
+    ? and(
+        eq(quotePitches.brandIds, brandIds),
+        eq(quotePitches.campaignId, campaignId),
+        inArray(quotePitches.status, BLOCK_STATUSES)
+      )
+    : and(
+        eq(quotePitches.brandIds, brandIds),
+        inArray(quotePitches.status, BLOCK_STATUSES)
+      );
+
+  const [pitchedRow] = await db
+    .select({ n: drizzleSql<number>`count(*)::int` })
+    .from(quotePitches)
+    .where(pitchScope);
+
+  const blockedRows = await db
+    .selectDistinct({ id: quotePitches.quoteOpportunityId })
+    .from(quotePitches)
+    .where(pitchScope);
+  const blockedIds = blockedRows
+    .map((r) => r.id)
+    .filter((id): id is string => id != null);
+
+  const eligibleFilter = and(
+    eq(quotePriorities.brandIds, brandIds),
+    drizzleSql`${quotePriorities.score} >= ${scoreThreshold.toFixed(2)}::numeric`,
+    or(
+      drizzleSql`${quoteOpportunities.canonicalDeadline} IS NULL`,
+      drizzleSql`${quoteOpportunities.canonicalDeadline} > now()`
+    ),
+    drizzleSql`EXISTS (SELECT 1 FROM ${providerQuoteRequests} WHERE ${providerQuoteRequests.quoteOpportunityId} = ${quoteOpportunities.id} AND (${providerQuoteRequests.orgId} = ${orgId}::uuid OR ${providerQuoteRequests.orgId} = ${SHARED_EMAIL_ORG_ID}::uuid))`,
+    blockedIds.length > 0
+      ? drizzleSql`${quoteOpportunities.id} NOT IN (${drizzleSql.join(
+          blockedIds.map((id) => drizzleSql`${id}::uuid`),
+          drizzleSql`, `
+        )})`
+      : drizzleSql`TRUE`
+  );
+
+  const [eligibleRow] = await db
+    .select({ n: drizzleSql<number>`count(*)::int` })
+    .from(quotePriorities)
+    .innerJoin(
+      quoteOpportunities,
+      eq(quoteOpportunities.id, quotePriorities.quoteOpportunityId)
+    )
+    .where(eligibleFilter);
+
+  const [bestRow] = await db
+    .select({ best: drizzleSql<number | null>`max(${quotePriorities.score})` })
+    .from(quotePriorities)
+    .innerJoin(
+      quoteOpportunities,
+      eq(quoteOpportunities.id, quotePriorities.quoteOpportunityId)
+    )
+    .where(eligibleFilter);
+
+  return {
+    silverPoolSize: silverRow?.n ?? 0,
+    scoredCount: scoredRow?.n ?? 0,
+    eligibleCount: eligibleRow?.n ?? 0,
+    pitchedBlocking: pitchedRow?.n ?? 0,
+    expiredCount: expiredRow?.n ?? 0,
+    bestEligibleScore:
+      bestRow?.best != null ? Number(bestRow.best) : null,
+  };
+}
+
+/**
  * One /next pipeline call. Exhaustion-driven:
  *
  *   1. Try `selectUnscoredBatch` against the existing silver pool.
