@@ -12,25 +12,28 @@ Backend that ingests journalist quote requests (HARO emails + Featured.com Premi
 | **Gold** | `quote_priorities` | Scored projection. Natural key: `(quote_opportunity_id, brand_ids[])` — one row per `(opportunity, brandSet tuple)`. Materialized as a table (not a view) because scoring is expensive. Idempotent upsert. |
 | **Gold** | `quote_pitches` | Submitted/drafted/error pitch record. Natural key: `(quote_opportunity_id, brand_ids[])` exact-match for the non-blocking statuses (partial unique index, see `schema.ts`). |
 
-### Read-driven trigger (no cron)
+### Exhaustion-driven trigger (no cron, no time-based TTL)
 
 `/orgs/opportunities/next` is the only refresh path. Each call:
-1. Ingests Featured → silver. 5-minute in-memory TTL per `orgId` (`_resetFeaturedIngestCache` exposed for tests). Idempotent via `external_id` natural key.
-2. `selectUnscoredBatch` — picks at most **10** Gold clusters with NO row in `quote_priorities` for the exact `brand_ids[]` tuple. Anti-join via `LEFT JOIN ... IS NULL`. Filters expired `canonical_deadline`. Ordered by `first_seen_at ASC` for determinism.
+1. `selectUnscoredBatch` — picks at most **10** Gold clusters with NO row in `quote_priorities` for the exact `brand_ids[]` tuple. Anti-join via `LEFT JOIN ... IS NULL`. Filters expired `canonical_deadline`. Ordered by `first_seen_at ASC` for determinism.
+2. **If batch empty** → `ingestFeaturedToSilver`: refetch Featured `/opportunities-list` and upsert into silver. Idempotent on `external_id` natural key — repeat calls when Featured has published nothing new are cheap no-ops. Re-run `selectUnscoredBatch` after ingest.
 3. `scoreUnscored` — **one** chat-service call `POST /orgs/rag/score { documents, brandIds }` for the whole batch. Multi-brand tuple, not per-brand fan-out (DIS-67 enables this natively).
 4. `selectBestNonPitched` — SELECT MAX(score) above `SCORE_THRESHOLD` (default 0.5), filtering `quote_pitches` blocking rows for the same tuple (campaign-scoped if `campaignId` provided). Tie-break: `first_seen_at ASC` (oldest cluster wins).
+
+Featured is fetched ONLY when the consumer has fully drained the silver pool for the brand-set tuple. Natural backpressure: high-throughput callers consume what landed in silver before triggering an upstream refetch. No wall-clock TTL — Featured publication latency is implicit in the consumption cadence.
 
 **Invariants:**
 - Bronze immutable (no UPDATE; only INSERT … ON CONFLICT DO NOTHING).
 - Silver/Gold rebuildable from bronze (`fingerprint` is deterministic; truncating `quote_priorities` → next `/next` re-scores).
 - No score row keyed by `orgId` — `quote_priorities` is by `(opportunityId, brand_ids[])` tuple, shared across orgs that use the same brandSet. Org isolation enforced via silver-pool EXISTS check.
 
-**Why no cron:**
+**Why no cron, no TTL:**
 - Single Railway replica.
 - Trigger frequency = campaign tick (~1/min per active campaign), bounded.
-- Featured fetch (~500ms) absorbed into the /next budget; chat-service call (~1-2s for 10 docs × M brands) dominates anyway.
+- Featured fetch (~500ms) absorbed into the /next budget only when the pool is exhausted; chat-service call (~1-2s for 10 docs × M brands) dominates anyway.
+- Time-based TTL caps how fresh Featured opps can land in the catalog (5min stale-window). Exhaustion-driven trigger has zero stale-window — new opps surface on the next call after they're scored.
 
-If we ever scale-out to multiple replicas, replace the in-memory TTL Map with a `featured_sync_state(org_id, last_synced_at)` table.
+If we ever scale-out to multiple replicas, in-process state for "has this org been ingested yet" becomes per-replica and inconsistent. Mitigation: idempotent upsert means the worst case is N replicas each calling Featured `listOpportunities` once per pool-drain (multiplicative on Featured rate budget). At that point introduce a DB-backed lock (`SELECT … FOR UPDATE SKIP LOCKED` on a `featured_sync_state` row) so only one replica refetches per exhaustion event.
 
 ## Routes
 
