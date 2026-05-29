@@ -40,7 +40,7 @@ If we ever scale-out to multiple replicas, in-process state for "has this org be
 ## Routes
 
 - `POST /orgs/opportunities/next` — score-as-you-go write+read (above)
-- `POST /orgs/opportunities/ranked` — **pure-read** paginated list. SELECT-only over `quote_priorities ⋈ quote_opportunities`, filters expired deadlines, annotates with latest `pitchStatus`. Never scores. Body: `{ campaignId?, limit?, offset? }`. Used by HITL dashboard.
+- `POST /orgs/opportunities/ranked` — **pure-read** paginated list. SELECT-only over `quote_priorities ⋈ quote_opportunities`, filters expired deadlines, annotates with latest `pitchStatus`. Never scores. Body: `{ campaignId?, limit?, offset? }`. ⚠️ **DO NOT DROP** — consumed by distribute.you dashboard + public report via api-service `POST /v1/orgs/opportunities/ranked` proxy. Dropped once in v0.9.0, broke prod, restored in v0.9.1. Registry confirms both JQS + api-service routes are live.
 - `GET /orgs/opportunities/stats` — brand-set scoped catalog metrics (silverPoolSize, scoredCount, eligibleCount, pitchedBlocking, expiredCount, bestEligibleScore). Pure read.
 - `POST /orgs/opportunities/:id/reply` — submit pitch. `:id` = Gold cluster id. Idempotent on `(quote_opportunity_id, brand_ids[])`.
 - `POST /webhooks/inbound-email` — HMAC-verified push from email-gateway-service (bronze ingest).
@@ -69,8 +69,9 @@ Featured.com is no longer a direct JQS dependency — EQRS owns it.
 
 - `pnpm test` runs unit + integration. Integration tests need a local Postgres reachable at `JOURNALISTS_QUOTES_SERVICE_DATABASE_URL` (DB schema applied via `pnpm drizzle-kit migrate` — see `tests/setup.ts` for the default URL).
 - `tests/setup.ts` hardcodes env defaults (`SCORE_THRESHOLD`, alias routing, etc.) that OVERRIDE the route-level `process.env.X ?? "default"`. **When you change a route's env default, update `tests/setup.ts` too** — otherwise eligibility/threshold tests fail against the stale test value (cost a cycle when `SCORE_THRESHOLD` moved 0.5→30).
-- EQRS HTTP client mock lives in `tests/helpers/mock-eqrs.ts` (`buildMockEqrsClient` + `makeOpportunity`; tracks `fetchCalls` + `fetchSinceLog` + `submitCalls`).
+- EQRS HTTP client mock lives in `tests/helpers/mock-eqrs.ts` (`buildMockEqrsClient` + `makeOpportunity` + `makePremiumQuestion`; tracks `fetchCalls` + `premiumFetchCalls` + `fetchSinceLog` + `submitCalls`). `/next` ingest uses premium questions (`state.premiumQuestions`); discovery `state.opportunities` is dormant.
 - Integration tests `vi.mock` `judge-client.js` (`judgeRelevance` → high/mid/low keyword scorer 85/50/15) + `brand-client.js` (`extractBrandContext` → stub text) to avoid live chat-service / brand-service calls.
+- **Tie-break flake**: equal-score opportunities tie-break on `first_seen_at ASC`, but Gold clusters created in ONE ingest batch share an identical `first_seen_at` (transaction `now()`) → tie order is non-deterministic. In `/next` tests where a specific winner is asserted after blocking the top one, give candidates **distinct** judge scores (different `high`/`mid` keywords) so the post-block winner is deterministic. Cost a flaky CI cycle on v0.11.1.
 
 ## Future evolution
 
