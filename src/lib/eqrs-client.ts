@@ -6,8 +6,26 @@
  * journalists-quotes-service no longer touches featured.com directly.
  *
  * Failure mode: missing env vars / non-2xx responses throw. The caller
- * surfaces 502 upstream. NO silent fallback.
+ * surfaces 502 upstream — except a 402 (insufficient credit), which the
+ * caller surfaces as 402 since EQRS owns the featured-submit credit gate.
+ * NO silent fallback.
  */
+
+/**
+ * Thrown on a non-2xx response from EQRS. Carries the upstream HTTP
+ * `status` so callers can map it (e.g. 402 insufficient-credit → 402).
+ * Mirrors the repo's BillingServiceError / EmailGatewayError pattern.
+ */
+export class EqrsServiceError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly body?: string
+  ) {
+    super(message);
+    this.name = "EqrsServiceError";
+  }
+}
 
 export interface EqrsOpportunity {
   id: string;
@@ -123,8 +141,10 @@ export function createEqrsClient(
       const response = await fetchImpl(url, { method: "GET", headers });
       if (!response.ok) {
         const body = await response.text();
-        throw new Error(
-          `EQRS GET /orgs/featured/opportunities failed (${response.status}): ${body}`
+        throw new EqrsServiceError(
+          `EQRS GET /orgs/featured/opportunities failed (${response.status}): ${body}`,
+          response.status,
+          body
         );
       }
       return (await response.json()) as EqrsOpportunitiesResponse;
@@ -145,8 +165,10 @@ export function createEqrsClient(
       );
       if (!response.ok) {
         const body = await response.text();
-        throw new Error(
-          `EQRS GET /orgs/featured/premium-questions failed (${response.status}): ${body}`
+        throw new EqrsServiceError(
+          `EQRS GET /orgs/featured/premium-questions failed (${response.status}): ${body}`,
+          response.status,
+          body
         );
       }
       return (await response.json()) as EqrsPremiumQuestionsResponse;
@@ -176,8 +198,10 @@ export function createEqrsClient(
       );
       if (!response.ok) {
         const body = await response.text();
-        throw new Error(
-          `EQRS POST /orgs/featured/answers failed (${response.status}): ${body}`
+        throw new EqrsServiceError(
+          `EQRS POST /orgs/featured/answers failed (${response.status}): ${body}`,
+          response.status,
+          body
         );
       }
       return (await response.json()) as EqrsSubmitResult;
