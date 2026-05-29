@@ -55,12 +55,11 @@ Every `/orgs/opportunities/*` route accepts `x-brand-id: <uuid>` (solo) or `<uui
 
 | Outbound | Why |
 |----------|-----|
-| `expert-quotes-requests-service` `GET /orgs/featured/premium-questions` + `POST /orgs/featured/answers` | Featured.com integration. **MVP ingests premium questions** (submittable feed, carry `featured_question_id`); discovery `GET /orgs/featured/opportunities` is no longer pulled (dormant client method). EQRS owns JWT + rate-limit + bronze raw payload + profile bootstrap. JQS pulls + submits via HTTP. |
+| `expert-quotes-requests-service` `GET /orgs/featured/premium-questions` + `POST /orgs/featured/answers` | Featured.com integration. **MVP ingests premium questions** (submittable feed, carry `featured_question_id`); discovery `GET /orgs/featured/opportunities` is no longer pulled (dormant client method). EQRS owns JWT + rate-limit + bronze raw payload + profile bootstrap. **EQRS also owns the `featured-api-pitch-submit` cost: it declares (provision → authorize → execute → actualize) + credit-gates the submit, since it performs the terminal Featured.com call. JQS does NOT declare or gate that cost — it surfaces EQRS's outcome (incl. 402 insufficient-credit) verbatim.** JQS pulls + submits via HTTP. |
 | `chat-service` `POST /complete` | LLM relevance judge (google/flash). One call per /next tick → 0-100 score + reasoning. |
 | `brand-service` `POST /orgs/brands/extract-fields` | Brand-set profile (industry/expertise/audience/topics) for the judge prompt. Cached 30d brand-side. |
 | `brand-service` | Brand metadata (HARO email signature). |
 | `email-gateway-service` `POST /orgs/send` | Outbound dispatch for `email_reply` delivery method. |
-| `billing-service` | Credit gate for `featured-api-pitch-submit`. |
 | `runs-service` | Run tracking (`withRunTracking` middleware). |
 
 Featured.com is no longer a direct JQS dependency — EQRS owns it.

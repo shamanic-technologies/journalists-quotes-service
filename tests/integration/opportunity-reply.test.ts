@@ -29,21 +29,12 @@ import {
   createMockEqrsState,
   type MockEqrsState,
 } from "../helpers/mock-eqrs.js";
+import { EqrsServiceError } from "../../src/lib/eqrs-client.js";
 import { SHARED_EMAIL_ORG_ID } from "../../src/lib/inbound/process.js";
 
-vi.mock("../../src/lib/billing-client.js", () => ({
-  authorizeCredit: vi.fn(async () => ({
-    sufficient: true,
-    balance_cents: 10_000,
-    required_cents: 1,
-  })),
-  BillingServiceError: class extends Error {
-    constructor(message: string, public readonly status: number) {
-      super(message);
-    }
-  },
-}));
-
+// runs-client mock kept ONLY to assert JQS never declares the featured cost.
+// addCosts has no caller in /reply anymore (EQRS owns the declaration); the
+// mock is a regression lock — if a featured-submit cost re-appears, it fires.
 vi.mock("../../src/lib/runs-client.js", async () => {
   const actual = await vi.importActual<
     typeof import("../../src/lib/runs-client.js")
@@ -400,16 +391,17 @@ describe("POST /orgs/opportunities/:id/reply", () => {
     expect(pitch.brandIds).toEqual([TEST_BRAND, TEST_BRAND_B].sort());
   });
 
-  it("returns 402 and does NOT call EQRS submitAnswer when billing is insufficient", async () => {
+  it("surfaces 402 from EQRS when credit is insufficient (no local gate, no pitch row)", async () => {
+    // EQRS owns the credit gate now: it 402s on insufficient credit. JQS
+    // surfaces that status verbatim — it does NOT gate locally. EQRS IS
+    // called (the 402 comes from it), and no pitch row is written.
     const { opp } = await seedFeaturedCluster(7777);
-    const { authorizeCredit } = await import(
-      "../../src/lib/billing-client.js"
-    );
-    (authorizeCredit as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      sufficient: false,
-      balance_cents: 0,
-      required_cents: 5,
-    });
+    state.submitImpl = async () => {
+      throw new EqrsServiceError(
+        "EQRS POST /orgs/featured/answers failed (402): insufficient credit for featured pitch submit",
+        402
+      );
+    };
 
     const res = await request(app())
       .post(`/orgs/opportunities/${opp.id}/reply`)
@@ -418,12 +410,12 @@ describe("POST /orgs/opportunities/:id/reply", () => {
 
     expect(res.status).toBe(402);
     expect(res.body.error).toMatch(/insufficient credit/);
-    expect(state.submitCalls).toHaveLength(0);
+    expect(state.submitCalls).toHaveLength(1);
     const pitches = await db.select().from(quotePitches);
     expect(pitches).toHaveLength(0);
   });
 
-  it("records featured-api-pitch-submit cost after a successful featured reply", async () => {
+  it("does NOT declare the featured-api-pitch-submit cost (EQRS owns it — no double-charge)", async () => {
     const { opp } = await seedFeaturedCluster(8888);
     const { addCosts } = await import("../../src/lib/runs-client.js");
     const mocked = addCosts as unknown as ReturnType<typeof vi.fn>;
@@ -436,32 +428,13 @@ describe("POST /orgs/opportunities/:id/reply", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("submitted");
-    expect(mocked).toHaveBeenCalledTimes(1);
-    const [, items] = mocked.mock.calls[0];
-    expect(items).toEqual([
-      {
-        costName: "featured-api-pitch-submit",
-        costSource: "platform",
-        quantity: 1,
-        status: "actual",
-      },
-    ]);
-  });
-
-  it("does NOT call billing-service on email-reply path", async () => {
-    const { opp } = await seedHaroCluster("uuid-haro-billing");
-    const { authorizeCredit } = await import("../../src/lib/billing-client.js");
-    const authorized = authorizeCredit as unknown as ReturnType<typeof vi.fn>;
-    authorized.mockClear();
-
-    const res = await request(app())
-      .post(`/orgs/opportunities/${opp.id}/reply`)
-      .set(AUTH_HEADERS)
-      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
-
-    expect(res.status).toBe(200);
-    expect(res.body.deliveryMethod).toBe("email_reply");
-    expect(authorized).not.toHaveBeenCalled();
+    // Regression lock: JQS must never declare a featured-submit cost.
+    const declaredFeaturedCost = mocked.mock.calls.some(([, items]) =>
+      (items as Array<{ costName: string }>).some(
+        (i) => i.costName === "featured-api-pitch-submit"
+      )
+    );
+    expect(declaredFeaturedCost).toBe(false);
   });
 
   it("brand-only body (no campaignId) submits + persists pitch with campaign_id NULL", async () => {

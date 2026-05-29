@@ -37,7 +37,6 @@ The server boots on `PORT` (default `3050`) and runs Drizzle migrations automati
 | `BRAND_SERVICE_URL` / `BRAND_SERVICE_API_KEY` | Brand metadata (HARO email signature, future use) |
 | `CHAT_SERVICE_URL` / `CHAT_SERVICE_API_KEY` | LLM relevance judge — `POST /complete` (google/flash) per /next tick, 0-100 score |
 | `EMAIL_GATEWAY_SERVICE_URL` / `EMAIL_GATEWAY_SERVICE_API_KEY` | WF3 email_reply dispatch via `POST /orgs/send` |
-| `BILLING_SERVICE_URL` / `BILLING_SERVICE_API_KEY` | featured-api-pitch-submit credit gate |
 | `JQS_INBOUND_HMAC_SECRET` | Shared secret email-gateway uses to sign pushes into `/webhooks/inbound-email` (300s replay window, sha256) |
 | `INBOUND_ALIAS_ROUTING` | JSON array `[{alias, provider}]` mapping recipient mailbox aliases to provider keys. Unknown aliases store with `provider=null` and `/internal/process-inbound-emails` marks them `skipped`. |
 
