@@ -35,7 +35,7 @@ The server boots on `PORT` (default `3050`) and runs Drizzle migrations automati
 | `EXPERT_QUOTES_REQUESTS_SERVICE_URL` / `EXPERT_QUOTES_REQUESTS_SERVICE_API_KEY` | EQRS — Featured.com bronze wrapper (auth, cursor, rate-limit, submit). JQS pulls new opps via `GET /orgs/featured/opportunities?since=…` and submits replies via `POST /orgs/featured/answers`. |
 | `RUNS_SERVICE_URL` / `RUNS_SERVICE_API_KEY` | Run tracking |
 | `BRAND_SERVICE_URL` / `BRAND_SERVICE_API_KEY` | Brand metadata (HARO email signature, future use) |
-| `CHAT_SERVICE_URL` / `CHAT_SERVICE_API_KEY` | RAG scoring — single multi-brand call per /next tick (`POST /orgs/rag/score` with body `{ documents, brandIds }`) |
+| `CHAT_SERVICE_URL` / `CHAT_SERVICE_API_KEY` | LLM relevance judge — `POST /complete` (google/flash) per /next tick, 0-100 score |
 | `EMAIL_GATEWAY_SERVICE_URL` / `EMAIL_GATEWAY_SERVICE_API_KEY` | WF3 email_reply dispatch via `POST /orgs/send` |
 | `BILLING_SERVICE_URL` / `BILLING_SERVICE_API_KEY` | featured-api-pitch-submit credit gate |
 | `JQS_INBOUND_HMAC_SECRET` | Shared secret email-gateway uses to sign pushes into `/webhooks/inbound-email` (300s replay window, sha256) |
@@ -110,9 +110,13 @@ or `{ "found": false }` when the buffer is exhausted for this brand-set.
 - WF1 inbound: `email-gateway-service` posts Postmark inbound payloads to `/webhooks/inbound-email` with `x-eg-signature: t=<unix_seconds>,v1=<hex sha256(t+"."+body, JQS_INBOUND_HMAC_SECRET)>`. 300s replay window.
 - WF3 outbound: this service calls `email-gateway-service POST /orgs/send` (transactional type) for `email_reply` pitches. For HARO, the journalist's anonymized reply alias (`reply+<uuid>@helpareporter.com`) routes responses back automatically — RFC2822 `In-Reply-To` headers are not required.
 
-## RAG scoring (chat-service)
+## Relevance scoring — LLM judge (chat-service)
 
-Per-brand loop + mean aggregate: `chat-service /orgs/rag/score` is single-brand; this service calls it once per brand in the canonical set, then averages per-document scores. One `quote_priorities` row is persisted per `(opportunity, brand-set)`. Native multi-brand `rag/score` is a chat-service follow-up.
+Opportunities are scored by an **LLM relevance judge**, not RAG similarity. `scoreUnscored` (a) fetches the brand-set profile from `brand-service POST /orgs/brands/extract-fields` (cached 30d), (b) calls `chat-service POST /complete` (`google/flash`, temp 0.2, strict `responseSchema`) with a judge prompt, getting a **0-100 relevance score** + one-sentence reasoning per opportunity. Score is collective for the brand-set (the tuple), persisted as one `quote_priorities` row per `(opportunity, brand_ids[])`.
+
+Bands (derived at read, not stored): **70-100** directly relevant · **30-69** adjacent · **0-29** off-topic. `SCORE_THRESHOLD` (default **30**) gates what `/next` + `/ranked` surface. `whyRelevant` = judge reasoning.
+
+Migration from the prior RAG 0-1 scores: `pnpm rejudge-reset` truncates `quote_priorities` + resets `eqrs_sync_state` so the catalog re-pulls from EQRS and re-judges on the 0-100 scale.
 
 ## Run tracking
 

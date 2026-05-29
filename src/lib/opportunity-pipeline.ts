@@ -12,7 +12,8 @@ import {
   type EqrsClient,
   type EqrsOpportunity,
 } from "./eqrs-client.js";
-import { ragScore } from "./chat-client.js";
+import { judgeRelevance } from "./judge-client.js";
+import { extractBrandContext } from "./brand-client.js";
 import { SHARED_EMAIL_ORG_ID } from "./inbound/process.js";
 import { computeFingerprint } from "./cluster/fingerprint.js";
 
@@ -344,7 +345,7 @@ const UNSCORED_BATCH_SIZE = 10;
  * exact brand-set tuple (LEFT JOIN ... IS NULL). Filters out
  * expired (canonical_deadline < now()) clusters.
  *
- * Returned rows are the minimum needed for ragScore: opportunityId +
+ * Returned rows are the minimum needed for the judge: opportunityId +
  * text. The /reply path uses pickRepresentativeSilver elsewhere — this
  * helper is a scoring-batch picker, not a UI-row builder.
  */
@@ -383,9 +384,13 @@ async function selectUnscoredBatch(
 
 /**
  * Score a batch of unscored opportunities against the brand-set tuple
- * via a single chat-service call (DIS-67 native multi-brand). Persists
- * to Gold (`quote_priorities`) keyed by (quote_opportunity_id, brand_ids[]).
+ * via an LLM relevance judge (chat-service `POST /complete`, google/flash).
+ * Score is 0-100 collective relevance for the brand-set. Persists to
+ * Gold (`quote_priorities`) keyed by (quote_opportunity_id, brand_ids[]).
  * Idempotent: upsert via onConflictDoUpdate.
+ *
+ * Brand context comes from brand-service AI extraction (cached 30d
+ * brand-side), rendered into the judge system prompt.
  */
 async function scoreUnscored(args: {
   candidates: { opportunityId: string; opportunityText: string }[];
@@ -398,18 +403,18 @@ async function scoreUnscored(args: {
   const { candidates, orgId, brandIds, campaignId, userId, runId } = args;
   if (candidates.length === 0) return;
 
-  const response = await ragScore(
-    {
-      documents: candidates.map((c) => ({
-        id: c.opportunityId,
-        text: c.opportunityText,
-      })),
-      brandIds,
-    },
+  const brandContext = await extractBrandContext(brandIds, orgId);
+
+  const response = await judgeRelevance({
+    documents: candidates.map((c) => ({
+      id: c.opportunityId,
+      text: c.opportunityText,
+    })),
+    brandContext,
     orgId,
     userId,
-    runId
-  );
+    runId,
+  });
 
   if (response.results.length === 0) return;
 
@@ -420,8 +425,10 @@ async function scoreUnscored(args: {
         quoteOpportunityId: r.id,
         brandIds,
         campaignId: campaignId ?? null,
-        score: r.score.toFixed(2),
-        whyRelevant: r.whyRelevant ?? null,
+        // Judge returns 0-100; clamp defensively + store with 2dp to
+        // fit numeric(5,2).
+        score: Math.max(0, Math.min(100, r.score)).toFixed(2),
+        whyRelevant: r.reasoning ?? null,
         scoredByRunId: runId ?? null,
         orgId,
       }))
