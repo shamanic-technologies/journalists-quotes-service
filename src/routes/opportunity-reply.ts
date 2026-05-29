@@ -9,13 +9,9 @@ import {
 } from "../db/schema.js";
 import {
   createEqrsClient,
+  EqrsServiceError,
   type EqrsClient,
 } from "../lib/eqrs-client.js";
-import {
-  authorizeCredit,
-  BillingServiceError,
-} from "../lib/billing-client.js";
-import { addCosts } from "../lib/runs-client.js";
 import {
   sendTransactionalEmail,
   EmailGatewayError,
@@ -29,8 +25,6 @@ import {
   BrandIdsHeaderError,
   parseBrandIdsHeader,
 } from "../lib/brand-ids.js";
-
-const FEATURED_PITCH_SUBMIT_COST = "featured-api-pitch-submit";
 
 const PARAMS_SCHEMA = z.object({ id: z.string().uuid() });
 
@@ -177,7 +171,6 @@ export function createOpportunityReplyRouter(
 
     if (delivery.deliveryMethod === "featured_api") {
       await handleFeaturedReply({
-        req,
         res,
         opportunityId,
         representative,
@@ -224,7 +217,6 @@ interface SilverRowFull {
 }
 
 async function handleFeaturedReply(args: {
-  req: import("express").Request;
   res: import("express").Response;
   opportunityId: string;
   representative: SilverRowFull;
@@ -238,7 +230,6 @@ async function handleFeaturedReply(args: {
   eqrsClient: EqrsClient;
 }) {
   const {
-    req,
     res,
     opportunityId,
     representative,
@@ -270,35 +261,11 @@ async function handleFeaturedReply(args: {
   // resolves Featured credentials + bootstraps the profile internally.
   const leadBrandId = brandIds[0];
 
-  // Credit gate. Featured-pitch-submit is billed regardless of whether
-  // the underlying Featured creds came from the platform or the org;
-  // EQRS abstracts that away. We always gate.
-  try {
-    const auth = await authorizeCredit({
-      items: [{ costName: FEATURED_PITCH_SUBMIT_COST, quantity: 1 }],
-      description: "featured pitch submit",
-      orgId,
-      userId,
-      runId,
-      brandId: leadBrandId,
-      campaignId,
-      featureSlug: req.featureSlug,
-      workflowSlug: req.workflowSlug,
-    });
-    if (!auth.sufficient) {
-      res.status(402).json({
-        error: "insufficient credit for featured pitch submit",
-        balance_cents: auth.balance_cents,
-        required_cents: auth.required_cents,
-      });
-      return;
-    }
-  } catch (err) {
-    const status = err instanceof BillingServiceError ? 502 : 500;
-    res.status(status).json({ error: (err as Error).message });
-    return;
-  }
-
+  // EQRS owns the featured-submit credit gate AND the
+  // `featured-api-pitch-submit` cost declaration (provision → authorize →
+  // execute → actualize, scoped to its own run) — it performs the terminal
+  // Featured.com call. JQS does NOT gate or declare that cost locally;
+  // doing so would double-charge. JQS surfaces EQRS's outcome instead.
   let submitResult;
   try {
     submitResult = await eqrsClient.submitAnswer({
@@ -310,6 +277,13 @@ async function handleFeaturedReply(args: {
       answer: pitchContent,
     });
   } catch (err) {
+    // Insufficient credit is gated by EQRS now (it declares + authorizes the
+    // cost). A 402 from EQRS is a credit block, not a failed submit attempt —
+    // surface it as 402 with no pitch row (re-submittable once credit lands).
+    if (err instanceof EqrsServiceError && err.status === 402) {
+      res.status(402).json({ error: err.message });
+      return;
+    }
     const [pitch] = await db
       .insert(quotePitches)
       .values({
@@ -391,35 +365,6 @@ async function handleFeaturedReply(args: {
       orgId,
     })
     .returning();
-
-  if (runId) {
-    try {
-      await addCosts(
-        runId,
-        [
-          {
-            costName: FEATURED_PITCH_SUBMIT_COST,
-            costSource: "platform",
-            quantity: 1,
-            status: "actual",
-          },
-        ],
-        {
-          orgId,
-          userId,
-          brandId: leadBrandId,
-          campaignId,
-          featureSlug: req.featureSlug,
-          workflowSlug: req.workflowSlug,
-        }
-      );
-    } catch (err) {
-      res.status(500).json({
-        error: `failed to record featured pitch submit cost: ${(err as Error).message}`,
-      });
-      return;
-    }
-  }
 
   res.json({
     status: "submitted",
