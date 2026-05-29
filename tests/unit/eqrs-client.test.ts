@@ -196,4 +196,64 @@ describe("createEqrsClient", () => {
       ).rejects.toThrow(/EQRS POST \/orgs\/featured\/answers failed \(500\)/);
     });
   });
+
+  describe("fetchPremiumQuestions", () => {
+    it("issues GET /orgs/featured/premium-questions with x-api-key + identity headers", async () => {
+      fetchSpy.mockResolvedValue(jsonResponse({ questions: [] }));
+      const client = createEqrsClient({
+        fetchImpl: fetchSpy as unknown as typeof fetch,
+      });
+      await client.fetchPremiumQuestions({
+        orgId: "org-1",
+        userId: "user-7",
+        runId: "run-9",
+      });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+      expect(String(url)).toBe(`${EQRS_URL}/orgs/featured/premium-questions`);
+      expect(init.method).toBe("GET");
+      const headers = init.headers as Record<string, string>;
+      expect(headers["x-api-key"]).toBe(EQRS_KEY);
+      expect(headers["x-org-id"]).toBe("org-1");
+      expect(headers["x-user-id"]).toBe("user-7");
+      expect(headers["x-run-id"]).toBe("run-9");
+    });
+
+    it("returns parsed questions verbatim", async () => {
+      fetchSpy.mockResolvedValue(
+        jsonResponse({
+          questions: [
+            {
+              featuredQuestionId: 4242,
+              question: "What is the future of X?",
+              source: "featured",
+              mediaOutlet: "Forbes",
+              pitchUrl: "https://app.featured.com/q/4242",
+              createdAt: "2026-05-01T00:00:00.000Z",
+              deadline: "2026-06-01T00:00:00.000Z",
+            },
+          ],
+        })
+      );
+      const client = createEqrsClient({
+        fetchImpl: fetchSpy as unknown as typeof fetch,
+      });
+      const res = await client.fetchPremiumQuestions({ orgId: "org-1" });
+      expect(res.questions).toHaveLength(1);
+      expect(res.questions[0].featuredQuestionId).toBe(4242);
+      expect(res.questions[0].question).toBe("What is the future of X?");
+    });
+
+    it("throws on non-2xx response (fail-loud)", async () => {
+      fetchSpy.mockResolvedValue(new Response("upstream boom", { status: 502 }));
+      const client = createEqrsClient({
+        fetchImpl: fetchSpy as unknown as typeof fetch,
+      });
+      await expect(
+        client.fetchPremiumQuestions({ orgId: "org-1" })
+      ).rejects.toThrow(
+        /EQRS GET \/orgs\/featured\/premium-questions failed \(502\)/
+      );
+    });
+  });
 });

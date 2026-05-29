@@ -11,6 +11,7 @@ import {
   createEqrsClient,
   type EqrsClient,
   type EqrsOpportunity,
+  type EqrsPremiumQuestion,
 } from "./eqrs-client.js";
 import { judgeRelevance } from "./judge-client.js";
 import { extractBrandContext } from "./brand-client.js";
@@ -45,6 +46,39 @@ export const BLOCK_STATUSES: PitchStatusValue[] = [
 ];
 
 /**
+ * How a Gold cluster can be acted on from the HITL dashboard:
+ *   - `featured_api`: Featured PREMIUM question — submit via EQRS
+ *     POST /orgs/featured/answers (carries featured_question_id).
+ *   - `email_reply`: email-sourced opp (HARO etc.) — submit via
+ *     email-gateway /orgs/send (carries pitch_email).
+ *   - `external_manual`: Featured DISCOVERY lead (web-aggregated, no
+ *     question id, no email) — NOT programmatically submittable. The
+ *     operator must pitch at the source URL. Send must not be offered.
+ */
+export type DeliveryMethod = "featured_api" | "email_reply" | "external_manual";
+
+/**
+ * Resolve whether a representative silver row can be submitted
+ * programmatically and by which method. Single source of truth for the
+ * `submittable` signal exposed on /next + /ranked and for the routing
+ * decision in /reply. No raw 400 ever — non-submittable opps get an
+ * explicit `external_manual` contract.
+ */
+export function computeDelivery(rep: {
+  provider: string;
+  featuredQuestionId: number | null;
+  pitchEmail: string | null;
+}): { submittable: boolean; deliveryMethod: DeliveryMethod } {
+  if (rep.provider === "featured" && rep.featuredQuestionId != null) {
+    return { submittable: true, deliveryMethod: "featured_api" };
+  }
+  if (rep.pitchEmail != null) {
+    return { submittable: true, deliveryMethod: "email_reply" };
+  }
+  return { submittable: false, deliveryMethod: "external_manual" };
+}
+
+/**
  * A Gold cluster surfaced to the API. The visible text + outlet +
  * deadline + delivery hints come from the silver "representative" row
  * (picked per pickRepresentativeSilver — Featured-API capable rows
@@ -64,6 +98,10 @@ export interface EligibleOpportunity {
   pitchEmail: string | null;
   category: string | null;
   pitchStatus: PitchStatusValue | null;
+  // Whether Send can be dispatched programmatically + by which method.
+  // Discovery leads are non-submittable (external_manual).
+  submittable: boolean;
+  deliveryMethod: DeliveryMethod;
 }
 
 export interface RankedOpportunity extends EligibleOpportunity {
@@ -296,6 +334,173 @@ export async function ingestFeaturedToSilver(args: {
   );
 }
 
+/**
+ * Pull Featured PREMIUM questions from EQRS and project them into JQS
+ * silver + Gold cluster. Premium questions are the ONLY Featured feed
+ * that is programmatically submittable (they carry a
+ * `featured_question_id`); the discovery `/opportunities` feed is null
+ * on that field and is intentionally NOT ingested here (MVP = premium
+ * only — what we can answer via Featured's API).
+ *
+ * Differences from the discovery ingest (`ingestFeaturedToSilver`):
+ *   - EQRS premium-questions is a pass-through with NO cursor/since.
+ *     We pull the full current list each exhaustion tick; the upsert is
+ *     idempotent so repeats are cheap no-ops. `eqrs_sync_state` is not
+ *     touched.
+ *   - Premium questions carry no `externalId`, so we synthesize a
+ *     stable one from the question id: `featured-premium-<fqid>`.
+ *
+ * Idempotent: silver upsert keys on
+ * (provider, ingestion_channel, external_id) and re-points to the
+ * canonical Gold cluster on conflict (fingerprint drift if a question's
+ * text is later edited upstream).
+ */
+export async function ingestPremiumQuestionsToSilver(args: {
+  orgId: string;
+  userId?: string;
+  runId?: string;
+  eqrsClient: EqrsClient;
+}): Promise<void> {
+  const { orgId, userId, runId, eqrsClient } = args;
+
+  let response;
+  try {
+    response = await eqrsClient.fetchPremiumQuestions({ orgId, userId, runId });
+  } catch (err) {
+    throw new EqrsServiceError((err as Error).message);
+  }
+
+  const questions = response.questions;
+
+  let newSilverCount = 0;
+  if (questions.length > 0) {
+    const allPrepared = questions.map((q: EqrsPremiumQuestion) => {
+      const text = q.question;
+      const outlet = q.mediaOutlet ?? null;
+      const fingerprint = computeFingerprint(text, outlet);
+      return {
+        q,
+        text,
+        outlet,
+        fingerprint,
+        externalId: `featured-premium-${q.featuredQuestionId}`,
+        deadline: safeParseDate(q.deadline),
+      };
+    });
+
+    // Dedupe by fingerprint before the Gold upsert (Postgres errcode
+    // 21000 — ON CONFLICT cannot affect the same row twice in one
+    // command). Same collapse semantics as the discovery path.
+    const preparedByFingerprint = new Map<string, typeof allPrepared[number]>();
+    for (const r of allPrepared) {
+      if (!preparedByFingerprint.has(r.fingerprint)) {
+        preparedByFingerprint.set(r.fingerprint, r);
+      }
+    }
+    const uniqueByFingerprint = Array.from(preparedByFingerprint.values());
+
+    // 1. Bulk upsert Gold clusters by fingerprint (touch last_seen_at).
+    await db
+      .insert(quoteOpportunities)
+      .values(
+        uniqueByFingerprint.map((r) => ({
+          fingerprint: r.fingerprint,
+          canonicalText: r.text,
+          canonicalOutlet: r.outlet,
+          canonicalDeadline: r.deadline,
+          clusterMethod: "fingerprint" as const,
+        }))
+      )
+      .onConflictDoUpdate({
+        target: quoteOpportunities.fingerprint,
+        set: { lastSeenAt: drizzleSql`now()` },
+      });
+
+    // 2. Resolve cluster ids by fingerprint.
+    const fingerprints = uniqueByFingerprint.map((r) => r.fingerprint);
+    const clusterRows = await db
+      .select({
+        id: quoteOpportunities.id,
+        fingerprint: quoteOpportunities.fingerprint,
+      })
+      .from(quoteOpportunities)
+      .where(inArray(quoteOpportunities.fingerprint, fingerprints));
+    const clusterIdByFingerprint = new Map(
+      clusterRows.map((c) => [c.fingerprint, c.id])
+    );
+
+    // 3. Bulk upsert silver rows, deduped by synthesized external_id.
+    const silverRowsByExternalId = new Map<
+      string,
+      typeof allPrepared[number]
+    >();
+    for (const r of allPrepared) {
+      if (!clusterIdByFingerprint.has(r.fingerprint)) continue;
+      if (!silverRowsByExternalId.has(r.externalId)) {
+        silverRowsByExternalId.set(r.externalId, r);
+      }
+    }
+    const uniqueByExternalId = Array.from(silverRowsByExternalId.values());
+
+    if (uniqueByExternalId.length > 0) {
+      const silverInserted = await db
+        .insert(providerQuoteRequests)
+        .values(
+          uniqueByExternalId.map((r) => ({
+            provider: "featured",
+            ingestionChannel: "api" as const,
+            externalId: r.externalId,
+            featuredQuestionId: r.q.featuredQuestionId,
+            mediaOutlet: r.outlet,
+            opportunityText: r.text,
+            pitchUrl: r.q.pitchUrl ?? null,
+            deadline: r.deadline,
+            raw: null,
+            quoteOpportunityId: clusterIdByFingerprint.get(r.fingerprint)!,
+            isCanonical: false,
+            fingerprint: r.fingerprint,
+            orgId,
+          }))
+        )
+        .onConflictDoUpdate({
+          target: [
+            providerQuoteRequests.provider,
+            providerQuoteRequests.ingestionChannel,
+            providerQuoteRequests.externalId,
+          ],
+          set: {
+            quoteOpportunityId: drizzleSql`excluded.quote_opportunity_id`,
+            fingerprint: drizzleSql`excluded.fingerprint`,
+            opportunityText: drizzleSql`excluded.opportunity_text`,
+            mediaOutlet: drizzleSql`excluded.media_outlet`,
+            deadline: drizzleSql`excluded.deadline`,
+            pitchUrl: drizzleSql`excluded.pitch_url`,
+            featuredQuestionId: drizzleSql`excluded.featured_question_id`,
+            updatedAt: drizzleSql`now()`,
+          },
+        })
+        .returning({ id: providerQuoteRequests.id });
+      newSilverCount = silverInserted.length;
+    }
+  }
+
+  console.log(
+    `[journalists-quotes-service] /next stage=premium-fetch orgId=${orgId} returned=${questions.length} newSilverCount=${newSilverCount}`
+  );
+}
+
+/**
+ * EXISTS predicate: the Gold cluster (`quoteOpportunities.id` in scope)
+ * has at least one SUBMITTABLE silver row in the org's pool (own or
+ * SHARED_EMAIL_ORG_ID). Submittable = Featured premium (provider
+ * 'featured' AND featured_question_id present) OR email-sourced
+ * (pitch_email present). Discovery leads (featured, null fqid, no
+ * email) fail this and are excluded from scoring + serving.
+ */
+function submittableSilverExists(orgId: string) {
+  return drizzleSql`EXISTS (SELECT 1 FROM ${providerQuoteRequests} WHERE ${providerQuoteRequests.quoteOpportunityId} = ${quoteOpportunities.id} AND (${providerQuoteRequests.orgId} = ${orgId}::uuid OR ${providerQuoteRequests.orgId} = ${SHARED_EMAIL_ORG_ID}::uuid) AND ((${providerQuoteRequests.provider} = 'featured' AND ${providerQuoteRequests.featuredQuestionId} IS NOT NULL) OR ${providerQuoteRequests.pitchEmail} IS NOT NULL))`;
+}
+
 interface SilverRow {
   id: string;
   provider: string;
@@ -373,7 +578,7 @@ async function selectUnscoredBatch(
           drizzleSql`${quoteOpportunities.canonicalDeadline} IS NULL`,
           drizzleSql`${quoteOpportunities.canonicalDeadline} > now()`
         ),
-        drizzleSql`EXISTS (SELECT 1 FROM ${providerQuoteRequests} WHERE ${providerQuoteRequests.quoteOpportunityId} = ${quoteOpportunities.id} AND (${providerQuoteRequests.orgId} = ${orgId}::uuid OR ${providerQuoteRequests.orgId} = ${SHARED_EMAIL_ORG_ID}::uuid))`
+        submittableSilverExists(orgId)
       )
     )
     .orderBy(quoteOpportunities.firstSeenAt)
@@ -508,7 +713,7 @@ async function selectBestNonPitched(args: {
           drizzleSql`${quoteOpportunities.canonicalDeadline} IS NULL`,
           drizzleSql`${quoteOpportunities.canonicalDeadline} > now()`
         ),
-        drizzleSql`EXISTS (SELECT 1 FROM ${providerQuoteRequests} WHERE ${providerQuoteRequests.quoteOpportunityId} = ${quoteOpportunities.id} AND (${providerQuoteRequests.orgId} = ${orgId}::uuid OR ${providerQuoteRequests.orgId} = ${SHARED_EMAIL_ORG_ID}::uuid))`,
+        submittableSilverExists(orgId),
         blockedIds.length > 0
           ? drizzleSql`${quoteOpportunities.id} NOT IN (${drizzleSql.join(
               blockedIds.map((id) => drizzleSql`${id}::uuid`),
@@ -572,6 +777,7 @@ async function selectBestNonPitched(args: {
     pitchEmail: rep.pitchEmail,
     category: rep.category,
     pitchStatus: null,
+    ...computeDelivery(rep),
     score: Number(best.score),
     whyRelevant: best.whyRelevant,
   };
@@ -609,7 +815,7 @@ export async function selectRankedPage(args: {
       drizzleSql`${quoteOpportunities.canonicalDeadline} IS NULL`,
       drizzleSql`${quoteOpportunities.canonicalDeadline} > now()`
     ),
-    drizzleSql`EXISTS (SELECT 1 FROM ${providerQuoteRequests} WHERE ${providerQuoteRequests.quoteOpportunityId} = ${quoteOpportunities.id} AND (${providerQuoteRequests.orgId} = ${orgId}::uuid OR ${providerQuoteRequests.orgId} = ${SHARED_EMAIL_ORG_ID}::uuid))`
+    submittableSilverExists(orgId)
   );
 
   const [totalRow] = await db
@@ -743,6 +949,7 @@ export async function selectRankedPage(args: {
       pitchEmail: rep.pitchEmail,
       category: rep.category,
       pitchStatus: latestPitchByOppId.get(row.opportunityId)?.status ?? null,
+      ...computeDelivery(rep),
       score: Number(row.score),
       whyRelevant: row.whyRelevant,
     });
@@ -849,7 +1056,7 @@ export async function selectOpportunitiesStats(args: {
       drizzleSql`${quoteOpportunities.canonicalDeadline} IS NULL`,
       drizzleSql`${quoteOpportunities.canonicalDeadline} > now()`
     ),
-    drizzleSql`EXISTS (SELECT 1 FROM ${providerQuoteRequests} WHERE ${providerQuoteRequests.quoteOpportunityId} = ${quoteOpportunities.id} AND (${providerQuoteRequests.orgId} = ${orgId}::uuid OR ${providerQuoteRequests.orgId} = ${SHARED_EMAIL_ORG_ID}::uuid))`,
+    submittableSilverExists(orgId),
     blockedIds.length > 0
       ? drizzleSql`${quoteOpportunities.id} NOT IN (${drizzleSql.join(
           blockedIds.map((id) => drizzleSql`${id}::uuid`),
@@ -935,7 +1142,11 @@ export async function pickNextOpportunity(args: {
     // external_id) so repeated calls when EQRS has nothing new are
     // cheap no-ops.
     const ingestStart = Date.now();
-    await ingestFeaturedToSilver({
+    // MVP = Featured PREMIUM questions only (the API-answerable feed).
+    // The discovery `/opportunities` ingest (ingestFeaturedToSilver)
+    // is dormant — its rows are not submittable and are filtered out of
+    // scoring + serving by submittableSilverExists.
+    await ingestPremiumQuestionsToSilver({
       orgId,
       userId,
       runId,
@@ -943,7 +1154,7 @@ export async function pickNextOpportunity(args: {
     });
     unscored = await selectUnscoredBatch(orgId, brandIds);
     console.log(
-      `[journalists-quotes-service] /next stage=eqrs-refetch orgId=${orgId} brandIds=${brandIdsLabel} unscoredAfterIngest=${unscored.length} ingestMs=${Date.now() - ingestStart}`
+      `[journalists-quotes-service] /next stage=premium-refetch orgId=${orgId} brandIds=${brandIdsLabel} unscoredAfterIngest=${unscored.length} ingestMs=${Date.now() - ingestStart}`
     );
   }
 

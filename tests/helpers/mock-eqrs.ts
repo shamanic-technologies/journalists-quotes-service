@@ -2,12 +2,16 @@ import type {
   EqrsClient,
   EqrsOpportunitiesResponse,
   EqrsOpportunity,
+  EqrsPremiumQuestion,
+  EqrsPremiumQuestionsResponse,
   EqrsSubmitResult,
 } from "../../src/lib/eqrs-client.js";
 
 export interface MockEqrsState {
   opportunities: EqrsOpportunity[];
+  premiumQuestions: EqrsPremiumQuestion[];
   fetchCalls: number;
+  premiumFetchCalls: number;
   fetchSinceLog: Array<string | undefined>;
   submitCalls: Array<{
     orgId: string;
@@ -22,6 +26,7 @@ export interface MockEqrsState {
     answer: string;
   }) => Promise<EqrsSubmitResult>;
   fetchImpl?: (since: string | undefined) => EqrsOpportunitiesResponse;
+  premiumFetchImpl?: () => EqrsPremiumQuestionsResponse;
 }
 
 export function createMockEqrsState(
@@ -29,7 +34,9 @@ export function createMockEqrsState(
 ): MockEqrsState {
   return {
     opportunities: [],
+    premiumQuestions: [],
     fetchCalls: 0,
+    premiumFetchCalls: 0,
     fetchSinceLog: [],
     submitCalls: [],
     ...overrides,
@@ -54,6 +61,13 @@ export function buildMockEqrsClient(state: MockEqrsState): EqrsClient {
           state.opportunities.length > 0 ? new Date().toISOString() : null,
         refreshed: true,
       };
+    },
+    async fetchPremiumQuestions() {
+      state.premiumFetchCalls++;
+      if (state.premiumFetchImpl) return state.premiumFetchImpl();
+      // Pass-through: returns the full current premium list each call
+      // (no cursor). Idempotent ingest makes repeats cheap no-ops.
+      return { questions: state.premiumQuestions };
     },
     async submitAnswer(args) {
       state.submitCalls.push({
@@ -95,5 +109,27 @@ export function makeOpportunity(
     raw: overrides.raw ?? null,
     firstSeenAt: overrides.firstSeenAt ?? new Date().toISOString(),
     lastSeenAt: overrides.lastSeenAt ?? new Date().toISOString(),
+  };
+}
+
+/**
+ * Helper to construct a well-formed `EqrsPremiumQuestion` for tests.
+ * Premium questions always carry a `featuredQuestionId` — that's what
+ * makes them submittable via Featured's API.
+ */
+export function makePremiumQuestion(
+  overrides: Partial<EqrsPremiumQuestion> & {
+    featuredQuestionId: number;
+    question: string;
+  }
+): EqrsPremiumQuestion {
+  return {
+    featuredQuestionId: overrides.featuredQuestionId,
+    question: overrides.question,
+    source: overrides.source ?? "featured",
+    mediaOutlet: overrides.mediaOutlet ?? null,
+    pitchUrl: overrides.pitchUrl ?? null,
+    createdAt: overrides.createdAt ?? new Date().toISOString(),
+    deadline: overrides.deadline ?? null,
   };
 }

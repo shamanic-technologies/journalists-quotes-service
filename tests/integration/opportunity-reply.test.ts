@@ -175,6 +175,48 @@ describe("POST /orgs/opportunities/:id/reply", () => {
     expect(pitches[0].quoteOpportunityId).toBe(opp.id);
   });
 
+  it("returns 422 not_submittable for a discovery opportunity (featured, null featured_question_id, no email)", async () => {
+    const fingerprint = "fp-discovery-reply";
+    const [opp] = await db
+      .insert(quoteOpportunities)
+      .values({
+        fingerprint,
+        canonicalText: "Discovery lead",
+        canonicalOutlet: "Qwoted",
+      })
+      .returning();
+    await db.insert(providerQuoteRequests).values({
+      provider: "featured",
+      ingestionChannel: "api",
+      externalId: "https://app.qwoted.com/opportunities/9",
+      featuredQuestionId: null,
+      pitchEmail: null,
+      pitchUrl: "https://app.qwoted.com/opportunities/9",
+      opportunityText: "Discovery lead",
+      mediaOutlet: "Qwoted",
+      orgId: TEST_ORG_A,
+      quoteOpportunityId: opp.id,
+      fingerprint,
+      isCanonical: true,
+    });
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${opp.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
+
+    expect(res.status).toBe(422);
+    expect(res.body.status).toBe("not_submittable");
+    expect(res.body.deliveryMethod).toBe("external_manual");
+    expect(res.body.pitchUrl).toBe(
+      "https://app.qwoted.com/opportunities/9"
+    );
+    // No submit, no pitch row written.
+    expect(state.submitCalls).toHaveLength(0);
+    const pitches = await db.select().from(quotePitches);
+    expect(pitches).toHaveLength(0);
+  });
+
   it("dispatches HARO opportunity via email-gateway /orgs/send (id = Gold cluster id)", async () => {
     const { opp } = await seedHaroCluster("uuid-haro-1");
     const pitchContent = "Pitching this expert. " + "P".repeat(120);

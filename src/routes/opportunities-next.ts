@@ -93,6 +93,8 @@ export function createOpportunitiesNextRouter(
         pitchUrl: best.pitchUrl,
         pitchEmail: best.pitchEmail,
         category: best.category,
+        submittable: best.submittable,
+        deliveryMethod: best.deliveryMethod,
         score: best.score,
         whyRelevant: best.whyRelevant,
       },

@@ -19,7 +19,6 @@ import {
 import { cleanTestData, closeDb } from "../helpers/test-db.js";
 import { db } from "../../src/db/index.js";
 import {
-  eqrsSyncState,
   providerQuoteRequests,
   quoteOpportunities,
   quotePitches,
@@ -29,7 +28,7 @@ import { eq } from "drizzle-orm";
 import {
   buildMockEqrsClient,
   createMockEqrsState,
-  makeOpportunity,
+  makePremiumQuestion,
   type MockEqrsState,
 } from "../helpers/mock-eqrs.js";
 import { judgeRelevance } from "../../src/lib/judge-client.js";
@@ -59,7 +58,7 @@ vi.mock("../../src/lib/brand-client.js", () => ({
 
 let state: MockEqrsState;
 
-describe("POST /orgs/opportunities/next", () => {
+describe("POST /orgs/opportunities/next (premium questions)", () => {
   beforeAll(async () => {
     await cleanTestData();
   });
@@ -80,13 +79,101 @@ describe("POST /orgs/opportunities/next", () => {
     });
   }
 
-  it("re-points existing silver row to the freshly-created Gold cluster on EQRS-driven re-ingest (fingerprint drift fix)", async () => {
-    // Simulate legacy state: a silver row exists with external_id
-    // = pitchUrl, pointing at an OLD Gold cluster whose fingerprint
-    // hashed text differently than today's `computeFingerprint`.
+  it("ingests premium questions into silver with synthesized external_id + non-null featured_question_id", async () => {
+    state.premiumQuestions = [
+      makePremiumQuestion({
+        featuredQuestionId: 6001,
+        question: "high signal AI ethics question",
+        mediaOutlet: "Forbes",
+      }),
+    ];
+
+    const res = await request(app())
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.found).toBe(true);
+    expect(state.premiumFetchCalls).toBe(1);
+
+    const silver = await db.select().from(providerQuoteRequests);
+    expect(silver).toHaveLength(1);
+    expect(silver[0].externalId).toBe("featured-premium-6001");
+    expect(silver[0].featuredQuestionId).toBe(6001);
+    expect(silver[0].provider).toBe("featured");
+    expect(silver[0].ingestionChannel).toBe("api");
+  });
+
+  it("returns submittable=true + deliveryMethod=featured_api on the payload", async () => {
+    state.premiumQuestions = [
+      makePremiumQuestion({
+        featuredQuestionId: 6100,
+        question: "high signal payload shape",
+        mediaOutlet: "Forbes",
+      }),
+    ];
+
+    const res = await request(app())
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.opportunity.submittable).toBe(true);
+    expect(res.body.opportunity.deliveryMethod).toBe("featured_api");
+    expect(res.body.opportunity.featuredQuestionId).toBe(6100);
+  });
+
+  it("does NOT surface discovery silver rows (featured, null featured_question_id, no email)", async () => {
+    // Simulate the legacy/discovery catalog: scored above threshold but
+    // not submittable. Must be filtered out — found:false, no scoring.
+    const [opp] = await db
+      .insert(quoteOpportunities)
+      .values({
+        fingerprint: "fp-discovery",
+        canonicalText: "high signal discovery lead",
+        canonicalOutlet: "Qwoted",
+      })
+      .returning();
+    await db.insert(providerQuoteRequests).values({
+      provider: "featured",
+      ingestionChannel: "api",
+      externalId: "https://app.qwoted.com/opportunities/123",
+      featuredQuestionId: null,
+      pitchEmail: null,
+      mediaOutlet: "Qwoted",
+      opportunityText: "high signal discovery lead",
+      pitchUrl: "https://app.qwoted.com/opportunities/123",
+      quoteOpportunityId: opp.id,
+      fingerprint: "fp-discovery",
+      isCanonical: true,
+      orgId: TEST_ORG_A,
+    });
+    await db.insert(quotePriorities).values({
+      quoteOpportunityId: opp.id,
+      brandIds: [TEST_BRAND],
+      score: "90.00",
+      whyRelevant: "seeded discovery score",
+      orgId: TEST_ORG_A,
+    });
+
+    // No premium questions available either.
+    const res = await request(app())
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ found: false });
+    // Discovery cluster is not even scored (filtered before judge).
+    expect(vi.mocked(judgeRelevance)).not.toHaveBeenCalled();
+  });
+
+  it("re-points existing premium silver row to the freshly-created Gold cluster on re-ingest (fingerprint drift fix)", async () => {
     const legacyText = "legacy signal expert query";
     const legacyOutlet = "Legacy Outlet";
-    const externalId = "https://pitch.example.com/legacy-1";
+    const externalId = "featured-premium-7777";
 
     const [legacyGold] = await db
       .insert(quoteOpportunities)
@@ -102,6 +189,7 @@ describe("POST /orgs/opportunities/next", () => {
         provider: "featured",
         ingestionChannel: "api",
         externalId,
+        featuredQuestionId: 7777,
         opportunityText: legacyText,
         mediaOutlet: legacyOutlet,
         quoteOpportunityId: legacyGold.id,
@@ -111,7 +199,7 @@ describe("POST /orgs/opportunities/next", () => {
       })
       .returning();
     // Pre-score the legacy Gold so /next's selectUnscoredBatch returns
-    // 0 → exhaust path → EQRS fetch → repoint logic fires.
+    // 0 → exhaust path → premium fetch → repoint logic fires.
     await db.insert(quotePriorities).values({
       quoteOpportunityId: legacyGold.id,
       brandIds: [TEST_BRAND],
@@ -120,13 +208,12 @@ describe("POST /orgs/opportunities/next", () => {
       orgId: TEST_ORG_A,
     });
 
-    // EQRS now returns the same external_id but with a TEXT that
+    // Premium feed now returns the same question id but with TEXT that
     // hashes to a different fingerprint under today's logic.
-    state.opportunities = [
-      makeOpportunity({
-        externalId,
+    state.premiumQuestions = [
+      makePremiumQuestion({
         featuredQuestionId: 7777,
-        opportunityText: "high signal modern expert query",
+        question: "high signal modern expert query",
         mediaOutlet: "Modern Outlet",
       }),
     ];
@@ -136,7 +223,6 @@ describe("POST /orgs/opportunities/next", () => {
       .set(AUTH_HEADERS)
       .send({});
 
-    // A new Gold cluster was created (modern fingerprint).
     const golds = await db.select().from(quoteOpportunities);
     expect(golds).toHaveLength(2);
     const modernGold = golds.find(
@@ -144,46 +230,36 @@ describe("POST /orgs/opportunities/next", () => {
     );
     expect(modernGold).toBeDefined();
 
-    // The silver row was REPOINTED to the new Gold cluster — not left
-    // orphaned at the legacy cluster.
     const [updated] = await db
       .select()
       .from(providerQuoteRequests)
       .where(eq(providerQuoteRequests.id, legacySilver.id));
     expect(updated.quoteOpportunityId).toBe(modernGold!.id);
     expect(updated.fingerprint).toBe(modernGold!.fingerprint);
-    expect(updated.opportunityText).toBe(
-      "high signal modern expert query"
-    );
+    expect(updated.opportunityText).toBe("high signal modern expert query");
     expect(updated.mediaOutlet).toBe("Modern Outlet");
-    // Identity / provenance fields preserved.
+    // Identity / provenance preserved.
     expect(updated.externalId).toBe(externalId);
     expect(updated.orgId).toBe(TEST_ORG_A);
     expect(updated.provider).toBe("featured");
+    expect(updated.featuredQuestionId).toBe(7777);
   });
 
-  it("dedupes EQRS rows with duplicate fingerprints in the same batch (Featured surfaces same question across multiple rows)", async () => {
-    // Same opportunityText + mediaOutlet → same fingerprint. Featured
-    // sometimes returns the same question under different external_ids
-    // (e.g. tagged for different verticals). ON CONFLICT DO UPDATE on
-    // quote_opportunities errors with Postgres 21000 if not deduped.
-    state.opportunities = [
-      makeOpportunity({
-        externalId: "dup-a",
+  it("dedupes premium questions with duplicate fingerprints in the same batch", async () => {
+    state.premiumQuestions = [
+      makePremiumQuestion({
         featuredQuestionId: 4001,
-        opportunityText: "high signal duplicate question",
+        question: "high signal duplicate question",
         mediaOutlet: "Outlet",
       }),
-      makeOpportunity({
-        externalId: "dup-b",
+      makePremiumQuestion({
         featuredQuestionId: 4002,
-        opportunityText: "high signal duplicate question",
+        question: "high signal duplicate question",
         mediaOutlet: "Outlet",
       }),
-      makeOpportunity({
-        externalId: "uniq",
+      makePremiumQuestion({
         featuredQuestionId: 4003,
-        opportunityText: "high signal unique row",
+        question: "high signal unique row",
         mediaOutlet: "Outlet",
       }),
     ];
@@ -196,21 +272,21 @@ describe("POST /orgs/opportunities/next", () => {
     expect(res.status).toBe(200);
     expect(res.body.found).toBe(true);
 
-    // Two Gold clusters: one for the duplicated fingerprint, one for the unique row.
     const goldRows = await db.select().from(quoteOpportunities);
     expect(goldRows).toHaveLength(2);
 
-    // Three silver rows: dup-a + dup-b BOTH inserted (silver natural key
-    // is external_id, not fingerprint) + uniq. dup-a and dup-b point at
-    // the SAME Gold cluster.
     const silverRows = await db.select().from(providerQuoteRequests);
     expect(silverRows).toHaveLength(3);
-    const dupA = silverRows.find((s) => s.externalId === "dup-a");
-    const dupB = silverRows.find((s) => s.externalId === "dup-b");
+    const dupA = silverRows.find(
+      (s) => s.externalId === "featured-premium-4001"
+    );
+    const dupB = silverRows.find(
+      (s) => s.externalId === "featured-premium-4002"
+    );
     expect(dupA?.quoteOpportunityId).toBe(dupB?.quoteOpportunityId);
   });
 
-  it("returns { found: false } when EQRS has no opportunities", async () => {
+  it("returns { found: false } when EQRS has no premium questions", async () => {
     const res = await request(app())
       .post("/orgs/opportunities/next")
       .set(AUTH_HEADERS)
@@ -231,23 +307,20 @@ describe("POST /orgs/opportunities/next", () => {
   });
 
   it("returns the single highest-scored Gold opportunity with brandIds echoed", async () => {
-    state.opportunities = [
-      makeOpportunity({
-        externalId: "1",
+    state.premiumQuestions = [
+      makePremiumQuestion({
         featuredQuestionId: 1,
-        opportunityText: "low signal cat memes",
+        question: "low signal cat memes",
         mediaOutlet: "BuzzFeed",
       }),
-      makeOpportunity({
-        externalId: "2",
+      makePremiumQuestion({
         featuredQuestionId: 2,
-        opportunityText: "high signal AI ethics",
+        question: "high signal AI ethics",
         mediaOutlet: "Forbes",
       }),
-      makeOpportunity({
-        externalId: "3",
+      makePremiumQuestion({
         featuredQuestionId: 3,
-        opportunityText: "mid signal SaaS pricing",
+        question: "mid signal SaaS pricing",
         mediaOutlet: "TechCrunch",
       }),
     ];
@@ -261,6 +334,8 @@ describe("POST /orgs/opportunities/next", () => {
     expect(res.body.found).toBe(true);
     expect(res.body.opportunity.featuredQuestionId).toBe(2);
     expect(res.body.opportunity.score).toBe(85);
+    expect(res.body.opportunity.submittable).toBe(true);
+    expect(res.body.opportunity.deliveryMethod).toBe("featured_api");
     expect(res.body.brandIds).toEqual([TEST_BRAND]);
 
     const goldIds = (
@@ -270,17 +345,18 @@ describe("POST /orgs/opportunities/next", () => {
   });
 
   it("skips opportunities with a blocking pitch on the same brand-set", async () => {
-    state.opportunities = [
-      makeOpportunity({
-        externalId: "11",
+    // Distinct scores (high=85, mid=50) so the post-block winner is
+    // deterministic — equal scores tie-break on first_seen_at, which is
+    // identical for clusters created in the same ingest batch.
+    state.premiumQuestions = [
+      makePremiumQuestion({
         featuredQuestionId: 11,
-        opportunityText: "high signal top",
+        question: "high signal top",
         mediaOutlet: "Outlet 1",
       }),
-      makeOpportunity({
-        externalId: "12",
+      makePremiumQuestion({
         featuredQuestionId: 12,
-        opportunityText: "high signal second",
+        question: "mid signal second",
         mediaOutlet: "Outlet 2",
       }),
     ];
@@ -297,7 +373,7 @@ describe("POST /orgs/opportunities/next", () => {
       await db
         .select()
         .from(providerQuoteRequests)
-        .where(eq(providerQuoteRequests.externalId, "11"))
+        .where(eq(providerQuoteRequests.externalId, "featured-premium-11"))
     )[0];
     await db.insert(quotePitches).values({
       quoteRequestId: silverTop.id,
@@ -317,11 +393,10 @@ describe("POST /orgs/opportunities/next", () => {
   });
 
   it("co-brand pitch [A,B] does NOT block solo /next for [A]", async () => {
-    state.opportunities = [
-      makeOpportunity({
-        externalId: "21",
+    state.premiumQuestions = [
+      makePremiumQuestion({
         featuredQuestionId: 21,
-        opportunityText: "high signal solo target",
+        question: "high signal solo target",
         mediaOutlet: "Outlet S",
       }),
     ];
@@ -336,7 +411,7 @@ describe("POST /orgs/opportunities/next", () => {
       await db
         .select()
         .from(providerQuoteRequests)
-        .where(eq(providerQuoteRequests.externalId, "21"))
+        .where(eq(providerQuoteRequests.externalId, "featured-premium-21"))
     )[0];
 
     await db.insert(quotePitches).values({
@@ -356,12 +431,11 @@ describe("POST /orgs/opportunities/next", () => {
     expect(res.body.opportunity.featuredQuestionId).toBe(21);
   });
 
-  it("cold start: pulls all opportunities from EQRS in a single fetch + scores in a single multi-brand call (LIMIT 10)", async () => {
-    state.opportunities = Array.from({ length: 15 }, (_, i) =>
-      makeOpportunity({
-        externalId: String(500 + i),
+  it("cold start: pulls all premium questions in a single fetch + scores in a single multi-brand call (LIMIT 10)", async () => {
+    state.premiumQuestions = Array.from({ length: 15 }, (_, i) =>
+      makePremiumQuestion({
         featuredQuestionId: 500 + i,
-        opportunityText: `high signal item ${i}`,
+        question: `high signal item ${i}`,
         mediaOutlet: `Outlet ${i}`,
       })
     );
@@ -373,17 +447,13 @@ describe("POST /orgs/opportunities/next", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.found).toBe(true);
-    expect(state.fetchCalls).toBe(1);
-    expect(state.fetchSinceLog[0]).toBeUndefined();
+    expect(state.premiumFetchCalls).toBe(1);
     expect(vi.mocked(judgeRelevance)).toHaveBeenCalledTimes(1);
     const call = vi.mocked(judgeRelevance).mock.calls[0][0] as {
       documents: unknown[];
       brandContext: string;
     };
     expect(call.documents).toHaveLength(10);
-    // Brand identity reaches the judge as rendered brandContext text,
-    // not as a brandIds field. The (opportunity, brand_ids[]) keying
-    // lives in the quote_priorities upsert.
     expect(typeof call.brandContext).toBe("string");
     expect(vi.mocked(extractBrandContext)).toHaveBeenCalled();
 
@@ -392,11 +462,10 @@ describe("POST /orgs/opportunities/next", () => {
   });
 
   it("stable state: zero scoring when every visible opportunity is already in quote_priorities", async () => {
-    state.opportunities = [
-      makeOpportunity({
-        externalId: "901",
+    state.premiumQuestions = [
+      makePremiumQuestion({
         featuredQuestionId: 901,
-        opportunityText: "high signal stable",
+        question: "high signal stable",
         mediaOutlet: "Outlet X",
       }),
     ];
@@ -418,69 +487,43 @@ describe("POST /orgs/opportunities/next", () => {
     expect(vi.mocked(judgeRelevance)).not.toHaveBeenCalled();
   });
 
-  it("exhaustion-driven: EQRS fetched once on cold start, skipped while unscored remain, refetched after pool drains with a `since` cursor", async () => {
-    state.opportunities = Array.from({ length: 12 }, (_, i) =>
-      makeOpportunity({
-        externalId: String(9100 + i),
+  it("exhaustion-driven: premium fetched on cold start, skipped while unscored remain, refetched after pool drains", async () => {
+    state.premiumQuestions = Array.from({ length: 12 }, (_, i) =>
+      makePremiumQuestion({
         featuredQuestionId: 9100 + i,
-        opportunityText: `high signal exhaust ${i}`,
+        question: `high signal exhaust ${i}`,
         mediaOutlet: `Outlet ${i}`,
       })
     );
 
     const a = app();
-    // Call 1: silver empty → EQRS fetched → 12 ingested → score 10 of 12.
+    // Call 1: silver empty → premium fetched → 12 ingested → score 10 of 12.
     await request(a)
       .post("/orgs/opportunities/next")
       .set(AUTH_HEADERS)
       .send({});
-    expect(state.fetchCalls).toBe(1);
+    expect(state.premiumFetchCalls).toBe(1);
 
-    // Call 2: 2 unscored remaining → NO EQRS fetch.
+    // Call 2: 2 unscored remaining → NO premium fetch (scores the 2).
     await request(a)
       .post("/orgs/opportunities/next")
       .set(AUTH_HEADERS)
       .send({});
-    expect(state.fetchCalls).toBe(1);
+    expect(state.premiumFetchCalls).toBe(1);
 
-    // Call 3: pool drained → EQRS fetch fires, with `since` set to cursor.
+    // Call 3: pool drained (all 12 scored) → premium fetch fires again.
     await request(a)
       .post("/orgs/opportunities/next")
       .set(AUTH_HEADERS)
       .send({});
-    expect(state.fetchCalls).toBe(2);
-    expect(state.fetchSinceLog[1]).toBeDefined();
-  });
-
-  it("EQRS cursor persists across calls in eqrs_sync_state", async () => {
-    state.opportunities = [
-      makeOpportunity({
-        externalId: "9200",
-        featuredQuestionId: 9200,
-        opportunityText: "high signal cursor",
-        mediaOutlet: "Outlet cursor",
-      }),
-    ];
-    const a = app();
-    await request(a)
-      .post("/orgs/opportunities/next")
-      .set(AUTH_HEADERS)
-      .send({});
-
-    const [row] = await db
-      .select()
-      .from(eqrsSyncState)
-      .where(eq(eqrsSyncState.orgId, TEST_ORG_A));
-    expect(row).toBeDefined();
-    expect(row.lastSyncedAt).not.toBeNull();
+    expect(state.premiumFetchCalls).toBe(2);
   });
 
   it("does NOT re-score across calls — quote_priorities rows reused", async () => {
-    state.opportunities = [
-      makeOpportunity({
-        externalId: "9300",
+    state.premiumQuestions = [
+      makePremiumQuestion({
         featuredQuestionId: 9300,
-        opportunityText: "high signal reuse",
+        question: "high signal reuse",
         mediaOutlet: "Outlet reuse",
       }),
     ];
@@ -515,11 +558,10 @@ describe("POST /orgs/opportunities/next", () => {
   });
 
   it("found:false when only available opportunity is below SCORE_THRESHOLD", async () => {
-    state.opportunities = [
-      makeOpportunity({
-        externalId: "8001",
+    state.premiumQuestions = [
+      makePremiumQuestion({
         featuredQuestionId: 8001,
-        opportunityText: "low signal noise",
+        question: "low signal noise",
         mediaOutlet: "Outlet noise",
       }),
     ];
@@ -546,7 +588,7 @@ describe("POST /orgs/opportunities/next", () => {
     await db.insert(providerQuoteRequests).values({
       provider: "featured",
       ingestionChannel: "api",
-      externalId: "expired-1",
+      externalId: "featured-premium-4000",
       featuredQuestionId: 4000,
       mediaOutlet: "Outlet expired",
       opportunityText: "high signal expired",
