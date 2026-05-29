@@ -66,7 +66,8 @@ Featured.com is no longer a direct JQS dependency — EQRS owns it.
 ## Tests
 
 - `pnpm test` runs unit + integration. Integration tests need a local Postgres reachable at `JOURNALISTS_QUOTES_SERVICE_DATABASE_URL` (DB schema applied via `pnpm drizzle-kit migrate` — see `tests/setup.ts` for the default URL).
-- Mock Featured client lives in `tests/helpers/mock-featured.ts` (tracks `loginCalls` + `listOpportunitiesCalls` for assertion).
+- `tests/setup.ts` hardcodes env defaults (`SCORE_THRESHOLD`, alias routing, etc.) that OVERRIDE the route-level `process.env.X ?? "default"`. **When you change a route's env default, update `tests/setup.ts` too** — otherwise eligibility/threshold tests fail against the stale test value (cost a cycle when `SCORE_THRESHOLD` moved 0.5→30).
+- EQRS HTTP client mock lives in `tests/helpers/mock-eqrs.ts` (`buildMockEqrsClient` + `makeOpportunity`; tracks `fetchCalls` + `fetchSinceLog` + `submitCalls`).
 - Integration tests `vi.mock` `judge-client.js` (`judgeRelevance` → high/mid/low keyword scorer 85/50/15) + `brand-client.js` (`extractBrandContext` → stub text) to avoid live chat-service / brand-service calls.
 
 ## Future evolution
