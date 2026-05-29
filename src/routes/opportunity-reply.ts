@@ -21,7 +21,10 @@ import {
   EmailGatewayError,
 } from "../lib/email-gateway-client.js";
 import { SHARED_EMAIL_ORG_ID } from "../lib/inbound/process.js";
-import { pickRepresentativeSilver } from "../lib/opportunity-pipeline.js";
+import {
+  computeDelivery,
+  pickRepresentativeSilver,
+} from "../lib/opportunity-pipeline.js";
 import {
   BrandIdsHeaderError,
   parseBrandIdsHeader,
@@ -156,7 +159,23 @@ export function createOpportunityReplyRouter(
       return;
     }
 
-    if (representative.provider === "featured") {
+    // Resolve how (and whether) this opportunity can be submitted.
+    // Discovery leads (Featured, no question id, no email) are NOT
+    // programmatically submittable — return an explicit non-submittable
+    // contract (422), never a raw 400 missing-fqid.
+    const delivery = computeDelivery(representative);
+    if (!delivery.submittable) {
+      res.status(422).json({
+        status: "not_submittable",
+        deliveryMethod: delivery.deliveryMethod,
+        reason:
+          "Featured discovery lead — no programmatic submit path. Pitch the journalist directly at the source URL.",
+        pitchUrl: representative.pitchUrl ?? null,
+      });
+      return;
+    }
+
+    if (delivery.deliveryMethod === "featured_api") {
       await handleFeaturedReply({
         req,
         res,
@@ -233,10 +252,15 @@ async function handleFeaturedReply(args: {
     eqrsClient,
   } = args;
 
+  // Unreachable in normal flow — the router only routes featured_api
+  // here when featuredQuestionId is present. Defensive: never a raw 400.
   if (representative.featuredQuestionId == null) {
-    res.status(400).json({
-      error:
-        "Featured opportunity missing featured_question_id; cannot submit",
+    res.status(422).json({
+      status: "not_submittable",
+      deliveryMethod: "external_manual",
+      reason:
+        "Featured discovery lead — no programmatic submit path. Pitch the journalist directly at the source URL.",
+      pitchUrl: representative.pitchUrl ?? null,
     });
     return;
   }

@@ -29,6 +29,28 @@ export interface EqrsOpportunitiesResponse {
   refreshed: boolean;
 }
 
+/**
+ * A Featured PREMIUM question — the only Featured feed that is
+ * programmatically submittable via POST /orgs/featured/answers.
+ * Carries a `featuredQuestionId` (always present, unlike the discovery
+ * `/opportunities` feed where it is null). EQRS exposes this as a
+ * pass-through to Featured's premium-question-list (no cursor, no
+ * bronze — returns the current premium list each call).
+ */
+export interface EqrsPremiumQuestion {
+  featuredQuestionId: number;
+  question: string;
+  source: string | null;
+  mediaOutlet: string | null;
+  pitchUrl: string | null;
+  createdAt: string | null;
+  deadline: string | null;
+}
+
+export interface EqrsPremiumQuestionsResponse {
+  questions: EqrsPremiumQuestion[];
+}
+
 export type EqrsSubmitResult =
   | {
       status: "submitted";
@@ -46,6 +68,12 @@ export interface EqrsClient {
     since?: string;
     limit?: number;
   }): Promise<EqrsOpportunitiesResponse>;
+
+  fetchPremiumQuestions(args: {
+    orgId: string;
+    userId?: string;
+    runId?: string;
+  }): Promise<EqrsPremiumQuestionsResponse>;
 
   submitAnswer(args: {
     orgId: string;
@@ -100,6 +128,28 @@ export function createEqrsClient(
         );
       }
       return (await response.json()) as EqrsOpportunitiesResponse;
+    },
+
+    async fetchPremiumQuestions(args) {
+      const { baseUrl, apiKey } = requireEnv();
+      const headers: Record<string, string> = {
+        "x-api-key": apiKey,
+        "x-org-id": args.orgId,
+      };
+      if (args.userId) headers["x-user-id"] = args.userId;
+      if (args.runId) headers["x-run-id"] = args.runId;
+
+      const response = await fetchImpl(
+        `${baseUrl}/orgs/featured/premium-questions`,
+        { method: "GET", headers }
+      );
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(
+          `EQRS GET /orgs/featured/premium-questions failed (${response.status}): ${body}`
+        );
+      }
+      return (await response.json()) as EqrsPremiumQuestionsResponse;
     },
 
     async submitAnswer(args) {

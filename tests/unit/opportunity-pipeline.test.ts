@@ -1,5 +1,50 @@
 import { describe, it, expect } from "vitest";
-import { pickRepresentativeSilver } from "../../src/lib/opportunity-pipeline.js";
+import {
+  computeDelivery,
+  pickRepresentativeSilver,
+} from "../../src/lib/opportunity-pipeline.js";
+
+describe("computeDelivery", () => {
+  it("featured + featuredQuestionId → submittable via featured_api", () => {
+    expect(
+      computeDelivery({
+        provider: "featured",
+        featuredQuestionId: 42,
+        pitchEmail: null,
+      })
+    ).toEqual({ submittable: true, deliveryMethod: "featured_api" });
+  });
+
+  it("email-sourced (pitchEmail) → submittable via email_reply", () => {
+    expect(
+      computeDelivery({
+        provider: "haro",
+        featuredQuestionId: null,
+        pitchEmail: "reply@helpareporter.com",
+      })
+    ).toEqual({ submittable: true, deliveryMethod: "email_reply" });
+  });
+
+  it("featured discovery (null fqid, no email) → NOT submittable (external_manual)", () => {
+    expect(
+      computeDelivery({
+        provider: "featured",
+        featuredQuestionId: null,
+        pitchEmail: null,
+      })
+    ).toEqual({ submittable: false, deliveryMethod: "external_manual" });
+  });
+
+  it("featured + fqid takes precedence over a stray pitchEmail", () => {
+    expect(
+      computeDelivery({
+        provider: "featured",
+        featuredQuestionId: 7,
+        pitchEmail: "x@y.com",
+      })
+    ).toEqual({ submittable: true, deliveryMethod: "featured_api" });
+  });
+});
 
 describe("pickRepresentativeSilver", () => {
   const baseRow = {

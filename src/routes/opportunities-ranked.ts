@@ -76,6 +76,8 @@ export function createOpportunitiesRankedRouter(
         pitchUrl: r.pitchUrl,
         pitchEmail: r.pitchEmail,
         category: r.category,
+        submittable: r.submittable,
+        deliveryMethod: r.deliveryMethod,
         score: r.score,
         whyRelevant: r.whyRelevant,
         pitchStatus: r.pitchStatus,
