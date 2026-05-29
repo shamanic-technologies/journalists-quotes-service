@@ -160,9 +160,44 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
     expect(res.body.opportunities[0].opportunityId).toBe(high);
     expect(res.body.opportunities[0].score).toBe(95);
     expect(res.body.opportunities[0].pitchStatus).toBeNull();
+    expect(res.body.opportunities[0].submittable).toBe(true);
+    expect(res.body.opportunities[0].deliveryMethod).toBe("featured_api");
     expect(res.body.opportunities[1].opportunityId).toBe(mid);
     expect(res.body.opportunities[1].score).toBe(70);
     expect(res.body.total).toBe(2);
+  });
+
+  it("excludes discovery rows (featured, null featured_question_id, no email) from the list", async () => {
+    // Submittable premium row (lower score).
+    const prem = await seedScoredOpportunity({
+      fingerprint: "fp-prem",
+      text: "high signal premium",
+      outlet: "Forbes",
+      externalId: "featured-premium-1500",
+      featuredQuestionId: 1500,
+      brandIds: [TEST_BRAND],
+      score: 90,
+    });
+    // Discovery row (higher score) — no fqid, no email → non-submittable.
+    await seedScoredOpportunity({
+      fingerprint: "fp-disc",
+      text: "high signal discovery",
+      outlet: "Qwoted",
+      externalId: "https://app.qwoted.com/opportunities/1",
+      brandIds: [TEST_BRAND],
+      score: 95,
+    });
+
+    const res = await request(app())
+      .post("/orgs/opportunities/ranked")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.opportunities).toHaveLength(1);
+    expect(res.body.opportunities[0].opportunityId).toBe(prem);
+    expect(res.body.opportunities[0].featuredQuestionId).toBe(1500);
+    expect(res.body.opportunities[0].submittable).toBe(true);
+    expect(res.body.total).toBe(1);
   });
 
   it("honors limit + offset for paging", async () => {
@@ -490,6 +525,32 @@ describe("GET /orgs/opportunities/stats", () => {
     expect(res2.body.eligibleCount).toBe(0);
     expect(res2.body.pitchedBlocking).toBe(1);
     expect(res2.body.bestEligibleScore).toBeNull();
+  });
+
+  it("excludes discovery rows (null featured_question_id) from eligibleCount", async () => {
+    await seedScoredOpportunity({
+      fingerprint: "fp-prem-s",
+      text: "high signal premium stat",
+      externalId: "featured-premium-1600",
+      featuredQuestionId: 1600,
+      brandIds: [TEST_BRAND],
+      score: 90,
+    });
+    await seedScoredOpportunity({
+      fingerprint: "fp-disc-s",
+      text: "high signal discovery stat",
+      externalId: "https://app.qwoted.com/opportunities/2",
+      brandIds: [TEST_BRAND],
+      score: 95,
+    });
+
+    const res = await request(app())
+      .get("/orgs/opportunities/stats")
+      .set(AUTH_HEADERS);
+    expect(res.status).toBe(200);
+    expect(res.body.scoredCount).toBe(2);
+    expect(res.body.eligibleCount).toBe(1);
+    expect(res.body.bestEligibleScore).toBe(90);
   });
 
   it("counts expired opportunities separately + excludes them from eligible", async () => {
