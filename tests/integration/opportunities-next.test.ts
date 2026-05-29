@@ -32,22 +32,29 @@ import {
   makeOpportunity,
   type MockEqrsState,
 } from "../helpers/mock-eqrs.js";
-import { ragScore } from "../../src/lib/chat-client.js";
+import { judgeRelevance } from "../../src/lib/judge-client.js";
+import { extractBrandContext } from "../../src/lib/brand-client.js";
 
-vi.mock("../../src/lib/chat-client.js", () => ({
-  ragScore: vi.fn(
-    async (req: { documents: { id: string; text: string }[] }) => ({
-      results: req.documents.map((d) => ({
+// LLM judge mock: high→85, mid→50, else→15 (0-100 scale).
+vi.mock("../../src/lib/judge-client.js", () => ({
+  judgeRelevance: vi.fn(
+    async (args: { documents: { id: string; text: string }[] }) => ({
+      results: args.documents.map((d) => ({
         id: d.id,
         score: /high/i.test(d.text)
-          ? 0.95
+          ? 85
           : /mid/i.test(d.text)
-            ? 0.7
-            : 0.2,
-        whyRelevant: "test scorer",
+            ? 50
+            : 15,
+        reasoning: "test judge",
       })),
     })
   ),
+}));
+
+// Brand context fetch mock — avoid hitting brand-service in tests.
+vi.mock("../../src/lib/brand-client.js", () => ({
+  extractBrandContext: vi.fn(async () => "- Industry: Test\n- Expertise: Test"),
 }));
 
 let state: MockEqrsState;
@@ -57,7 +64,8 @@ describe("POST /orgs/opportunities/next", () => {
     await cleanTestData();
   });
   beforeEach(async () => {
-    vi.mocked(ragScore).mockClear();
+    vi.mocked(judgeRelevance).mockClear();
+    vi.mocked(extractBrandContext).mockClear();
     await cleanTestData();
     state = createMockEqrsState();
   });
@@ -107,7 +115,7 @@ describe("POST /orgs/opportunities/next", () => {
     await db.insert(quotePriorities).values({
       quoteOpportunityId: legacyGold.id,
       brandIds: [TEST_BRAND],
-      score: "0.40",
+      score: "40.00",
       whyRelevant: "pre-seeded legacy score",
       orgId: TEST_ORG_A,
     });
@@ -252,7 +260,7 @@ describe("POST /orgs/opportunities/next", () => {
     expect(res.status).toBe(200);
     expect(res.body.found).toBe(true);
     expect(res.body.opportunity.featuredQuestionId).toBe(2);
-    expect(res.body.opportunity.score).toBeCloseTo(0.95);
+    expect(res.body.opportunity.score).toBe(85);
     expect(res.body.brandIds).toEqual([TEST_BRAND]);
 
     const goldIds = (
@@ -367,13 +375,17 @@ describe("POST /orgs/opportunities/next", () => {
     expect(res.body.found).toBe(true);
     expect(state.fetchCalls).toBe(1);
     expect(state.fetchSinceLog[0]).toBeUndefined();
-    expect(vi.mocked(ragScore)).toHaveBeenCalledTimes(1);
-    const call = vi.mocked(ragScore).mock.calls[0][0] as {
+    expect(vi.mocked(judgeRelevance)).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(judgeRelevance).mock.calls[0][0] as {
       documents: unknown[];
-      brandIds: string[];
+      brandContext: string;
     };
     expect(call.documents).toHaveLength(10);
-    expect(call.brandIds).toEqual([TEST_BRAND]);
+    // Brand identity reaches the judge as rendered brandContext text,
+    // not as a brandIds field. The (opportunity, brand_ids[]) keying
+    // lives in the quote_priorities upsert.
+    expect(typeof call.brandContext).toBe("string");
+    expect(vi.mocked(extractBrandContext)).toHaveBeenCalled();
 
     const rows = await db.select().from(quotePriorities);
     expect(rows).toHaveLength(10);
@@ -394,16 +406,16 @@ describe("POST /orgs/opportunities/next", () => {
       .post("/orgs/opportunities/next")
       .set(AUTH_HEADERS)
       .send({});
-    expect(vi.mocked(ragScore)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(judgeRelevance)).toHaveBeenCalledTimes(1);
 
-    vi.mocked(ragScore).mockClear();
+    vi.mocked(judgeRelevance).mockClear();
     const res = await request(a)
       .post("/orgs/opportunities/next")
       .set(AUTH_HEADERS)
       .send({});
     expect(res.status).toBe(200);
     expect(res.body.found).toBe(true);
-    expect(vi.mocked(ragScore)).not.toHaveBeenCalled();
+    expect(vi.mocked(judgeRelevance)).not.toHaveBeenCalled();
   });
 
   it("exhaustion-driven: EQRS fetched once on cold start, skipped while unscored remain, refetched after pool drains with a `since` cursor", async () => {
@@ -486,14 +498,14 @@ describe("POST /orgs/opportunities/next", () => {
     )[0].scoredAt;
 
     await new Promise((r) => setTimeout(r, 50));
-    vi.mocked(ragScore).mockClear();
+    vi.mocked(judgeRelevance).mockClear();
 
     const second = await request(a)
       .post("/orgs/opportunities/next")
       .set(AUTH_HEADERS)
       .send({});
     expect(second.body.found).toBe(true);
-    expect(vi.mocked(ragScore)).not.toHaveBeenCalled();
+    expect(vi.mocked(judgeRelevance)).not.toHaveBeenCalled();
     const secondScoredAt = (
       await db
         .select({ scoredAt: quotePriorities.scoredAt })
@@ -516,7 +528,7 @@ describe("POST /orgs/opportunities/next", () => {
       .set(AUTH_HEADERS)
       .send({});
     expect(res.body).toEqual({ found: false });
-    expect(vi.mocked(ragScore)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(judgeRelevance)).toHaveBeenCalledTimes(1);
   });
 
   it("filters out opportunities with a past canonical_deadline", async () => {
@@ -550,6 +562,6 @@ describe("POST /orgs/opportunities/next", () => {
       .set(AUTH_HEADERS)
       .send({});
     expect(res.body).toEqual({ found: false });
-    expect(vi.mocked(ragScore)).not.toHaveBeenCalled();
+    expect(vi.mocked(judgeRelevance)).not.toHaveBeenCalled();
   });
 });

@@ -128,7 +128,7 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
       externalId: "h-1",
       featuredQuestionId: 1001,
       brandIds: [TEST_BRAND],
-      score: 0.95,
+      score: 95,
     });
     const mid = await seedScoredOpportunity({
       fingerprint: "fp-mid",
@@ -137,7 +137,7 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
       externalId: "m-1",
       featuredQuestionId: 1002,
       brandIds: [TEST_BRAND],
-      score: 0.7,
+      score: 70,
     });
     // Below threshold — must be filtered.
     await seedScoredOpportunity({
@@ -147,7 +147,7 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
       externalId: "l-1",
       featuredQuestionId: 1003,
       brandIds: [TEST_BRAND],
-      score: 0.2,
+      score: 20,
     });
 
     const res = await request(app())
@@ -158,10 +158,10 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
     expect(res.status).toBe(200);
     expect(res.body.opportunities).toHaveLength(2);
     expect(res.body.opportunities[0].opportunityId).toBe(high);
-    expect(res.body.opportunities[0].score).toBeCloseTo(0.95);
+    expect(res.body.opportunities[0].score).toBe(95);
     expect(res.body.opportunities[0].pitchStatus).toBeNull();
     expect(res.body.opportunities[1].opportunityId).toBe(mid);
-    expect(res.body.opportunities[1].score).toBeCloseTo(0.7);
+    expect(res.body.opportunities[1].score).toBe(70);
     expect(res.body.total).toBe(2);
   });
 
@@ -174,7 +174,7 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
         externalId: `e-${i}`,
         featuredQuestionId: 2000 + i,
         brandIds: [TEST_BRAND],
-        score: 0.9 - i * 0.01,
+        score: 90 - i,
       });
     }
 
@@ -211,7 +211,7 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
       externalId: "p-a",
       featuredQuestionId: 9001,
       brandIds: [TEST_BRAND],
-      score: 0.9,
+      score: 90,
     });
     const oppB = await seedScoredOpportunity({
       fingerprint: "fp-b",
@@ -219,7 +219,7 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
       externalId: "p-b",
       featuredQuestionId: 9002,
       brandIds: [TEST_BRAND],
-      score: 0.8,
+      score: 80,
     });
     const silverA = (
       await db
@@ -256,7 +256,7 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
       externalId: "p-iso",
       featuredQuestionId: 9100,
       brandIds: [TEST_BRAND],
-      score: 0.9,
+      score: 90,
     });
     const silver = (
       await db
@@ -290,7 +290,7 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
       externalId: "p-brand",
       featuredQuestionId: 9200,
       brandIds: [TEST_BRAND],
-      score: 0.9,
+      score: 90,
     });
     const silver = (
       await db
@@ -324,7 +324,7 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
       externalId: "p-exp",
       featuredQuestionId: 9300,
       brandIds: [TEST_BRAND],
-      score: 0.9,
+      score: 90,
       deadline: pastDeadline,
     });
     const res = await request(app())
@@ -343,7 +343,7 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
       externalId: "p-ab",
       featuredQuestionId: 9400,
       brandIds: tupleAB,
-      score: 0.9,
+      score: 90,
     });
     // Solo-[A] row for same opp must NOT match the [A,B] query.
     await seedScoredOpportunity({
@@ -352,7 +352,7 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
       externalId: "p-a-solo",
       featuredQuestionId: 9401,
       brandIds: [TEST_BRAND],
-      score: 0.95,
+      score: 95,
     });
 
     const headers = { ...AUTH_HEADERS } as Record<string, string>;
@@ -375,7 +375,7 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
       externalId: "p-mut",
       featuredQuestionId: 9500,
       brandIds: [TEST_BRAND],
-      score: 0.9,
+      score: 90,
     });
     const beforeRows = await db.select().from(quotePriorities);
     const beforeScoredAt = beforeRows[0].scoredAt;
@@ -436,7 +436,7 @@ describe("GET /orgs/opportunities/stats", () => {
       externalId: "s-1",
       featuredQuestionId: 5001,
       brandIds: [TEST_BRAND],
-      score: 0.95,
+      score: 95,
     });
     // Below threshold — scored but not eligible.
     await seedScoredOpportunity({
@@ -445,7 +445,7 @@ describe("GET /orgs/opportunities/stats", () => {
       externalId: "s-2",
       featuredQuestionId: 5002,
       brandIds: [TEST_BRAND],
-      score: 0.2,
+      score: 20,
     });
     // Other brand-set — not visible to brand A query.
     await seedScoredOpportunity({
@@ -454,7 +454,7 @@ describe("GET /orgs/opportunities/stats", () => {
       externalId: "s-3",
       featuredQuestionId: 5003,
       brandIds: [TEST_BRAND_B],
-      score: 0.9,
+      score: 90,
     });
 
     const res = await request(app())
@@ -466,7 +466,7 @@ describe("GET /orgs/opportunities/stats", () => {
     expect(res.body.eligibleCount).toBe(1);
     expect(res.body.pitchedBlocking).toBe(0);
     expect(res.body.expiredCount).toBe(0);
-    expect(res.body.bestEligibleScore).toBeCloseTo(0.95);
+    expect(res.body.bestEligibleScore).toBe(95);
 
     // Pitch the high one — eligible drops.
     const silverHigh = (
@@ -500,7 +500,7 @@ describe("GET /orgs/opportunities/stats", () => {
       externalId: "exp-1",
       featuredQuestionId: 6001,
       brandIds: [TEST_BRAND],
-      score: 0.9,
+      score: 90,
       deadline: past,
     });
 
@@ -519,7 +519,7 @@ describe("GET /orgs/opportunities/stats", () => {
       externalId: "c-1",
       featuredQuestionId: 7001,
       brandIds: [TEST_BRAND],
-      score: 0.9,
+      score: 90,
     });
     const silver = (
       await db
