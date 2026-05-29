@@ -9,7 +9,7 @@ import {
   parseBrandIdsHeader,
 } from "../lib/brand-ids.js";
 
-const SCORE_THRESHOLD = Number(process.env.SCORE_THRESHOLD ?? "0.5");
+const SCORE_THRESHOLD = Number(process.env.SCORE_THRESHOLD ?? "30");
 
 const OpportunityRankedRequestSchema = z.object({
   campaignId: z.string().uuid().optional(),

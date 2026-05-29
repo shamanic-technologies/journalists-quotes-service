@@ -17,8 +17,8 @@ Backend that ingests journalist quote requests (HARO emails + Featured.com Premi
 `/orgs/opportunities/next` is the only refresh path. Each call:
 1. `selectUnscoredBatch` — picks at most **10** Gold clusters with NO row in `quote_priorities` for the exact `brand_ids[]` tuple. Anti-join via `LEFT JOIN ... IS NULL`. Filters expired `canonical_deadline`. Ordered by `first_seen_at ASC` for determinism.
 2. **If batch empty** → `ingestFeaturedToSilver`: pull new opportunities from **expert-quotes-requests-service** (EQRS) via `GET /orgs/featured/opportunities?since=<cursor>`, project into silver + Gold cluster, advance cursor in `eqrs_sync_state`. Idempotent on `external_id` natural key. EQRS owns Featured throttling internally so JQS can call every exhausted tick — when EQRS has nothing new, response is `items=[]` and the round-trip is sub-100ms.
-3. `scoreUnscored` — **one** chat-service call `POST /orgs/rag/score { documents, brandIds }` for the whole batch. Multi-brand tuple, not per-brand fan-out.
-4. `selectBestNonPitched` — SELECT MAX(score) above `SCORE_THRESHOLD` (default 0.5), filtering `quote_pitches` blocking rows for the same tuple (campaign-scoped if `campaignId` provided). Tie-break: `first_seen_at ASC` (oldest cluster wins).
+3. `scoreUnscored` — **LLM relevance judge** (not RAG). Fetches the brand-set profile from `brand-service POST /orgs/brands/extract-fields` (cached 30d), then **one** `chat-service POST /complete` call (`google/flash`, temp 0.2, strict `responseSchema`) returning a **0-100** relevance score + reasoning per opportunity. Collective score for the brand-set tuple, stored one row per `(opportunity, brand_ids[])`. Score keying = tuple; serve/dedup keying = atomic per brand (see global "collective scoring, atomic exclusion").
+4. `selectBestNonPitched` — SELECT MAX(score) above `SCORE_THRESHOLD` (default **30**, 0-100 scale), filtering `quote_pitches` blocking rows for the same tuple (campaign-scoped if `campaignId` provided). Tie-break: `first_seen_at ASC` (oldest cluster wins). Bands derived at read: ≥70 direct / ≥30 adjacent / <30 off-topic.
 
 EQRS is pulled ONLY when the consumer has fully drained the silver pool for the brand-set tuple. Natural backpressure: high-throughput callers consume what landed in silver before triggering an upstream pull. No wall-clock TTL on JQS side — EQRS owns the per-org Featured.com refresh policy.
 
@@ -54,7 +54,8 @@ Every `/orgs/opportunities/*` route accepts `x-brand-id: <uuid>` (solo) or `<uui
 | Outbound | Why |
 |----------|-----|
 | `expert-quotes-requests-service` `GET /orgs/featured/opportunities` + `POST /orgs/featured/answers` | Featured.com integration. EQRS owns JWT + rate-limit + cursor + bronze raw payload + profile bootstrap. JQS pulls + submits via HTTP. |
-| `chat-service` `POST /orgs/rag/score` | RAG scoring. Single multi-brand call per /next tick. |
+| `chat-service` `POST /complete` | LLM relevance judge (google/flash). One call per /next tick → 0-100 score + reasoning. |
+| `brand-service` `POST /orgs/brands/extract-fields` | Brand-set profile (industry/expertise/audience/topics) for the judge prompt. Cached 30d brand-side. |
 | `brand-service` | Brand metadata (HARO email signature). |
 | `email-gateway-service` `POST /orgs/send` | Outbound dispatch for `email_reply` delivery method. |
 | `billing-service` | Credit gate for `featured-api-pitch-submit`. |
@@ -66,10 +67,11 @@ Featured.com is no longer a direct JQS dependency — EQRS owns it.
 
 - `pnpm test` runs unit + integration. Integration tests need a local Postgres reachable at `JOURNALISTS_QUOTES_SERVICE_DATABASE_URL` (DB schema applied via `pnpm drizzle-kit migrate` — see `tests/setup.ts` for the default URL).
 - Mock Featured client lives in `tests/helpers/mock-featured.ts` (tracks `loginCalls` + `listOpportunitiesCalls` for assertion).
-- `vi.mock("../../src/lib/chat-client.js")` in integration tests substitutes `ragScore` with a high/mid/low keyword scorer.
+- Integration tests `vi.mock` `judge-client.js` (`judgeRelevance` → high/mid/low keyword scorer 85/50/15) + `brand-client.js` (`extractBrandContext` → stub text) to avoid live chat-service / brand-service calls.
 
 ## Future evolution
 
 - If multiple replicas: per-org TTL state moves to DB.
-- If chat-service ragScore becomes a bottleneck under bursty /next traffic: per-org concurrency cap on `pickNextOpportunity` (one in-flight call per (orgId, brandIds) at a time).
+- If the judge `/complete` call becomes a bottleneck under bursty /next traffic: per-org concurrency cap on `pickNextOpportunity` (one in-flight call per (orgId, brandIds) at a time).
+- Served-status source of truth → EQRS (per global "collective scoring, atomic exclusion"). W1 uses local `quote_pitches` block; swap to an EQRS submitted-status query once EQRS ships the endpoint (DIS follow-up).
 - If Featured publishes a cursor or `since=` parameter, replace `onConflictDoNothing` idempotency with explicit Featured-cursor state (saves O(catalog) work per tick).

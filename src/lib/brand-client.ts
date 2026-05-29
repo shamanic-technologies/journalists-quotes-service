@@ -36,3 +36,86 @@ export async function getBrand(
   if (!data.brand) throw new Error("brand-service response missing brand");
   return data.brand;
 }
+
+// Fields requested from brand-service AI extraction to give the
+// relevance judge enough brand context to score press opportunities.
+const JUDGE_BRAND_FIELDS = [
+  {
+    key: "industry",
+    description: "The brand's primary industry vertical",
+  },
+  {
+    key: "expertise",
+    description:
+      "What the brand and its spokespeople are credible experts on",
+  },
+  {
+    key: "targetAudience",
+    description: "The brand's target audience",
+  },
+  {
+    key: "expertiseTopics",
+    description:
+      "Specific topics the brand can authoritatively comment on for press / journalist quote requests",
+  },
+] as const;
+
+interface ExtractFieldsResponse {
+  fields: Record<string, { value: unknown }>;
+}
+
+function coerceFieldValue(value: unknown): string {
+  if (value == null) return "(unknown)";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(coerceFieldValue).join(", ");
+  return JSON.stringify(value);
+}
+
+/**
+ * Resolve a brand-set's profile via brand-service AI extraction and
+ * render it as a plain-text block for the relevance judge prompt.
+ * Reads brand identity from the `x-brand-id` header (CSV when plural);
+ * brand-service consolidates multi-brand values. Results are cached
+ * 30 days brand-side, so repeat calls for the same brand-set are cheap.
+ */
+export async function extractBrandContext(
+  brandIds: string[],
+  orgId: string
+): Promise<string> {
+  if (brandIds.length === 0) {
+    throw new Error("extractBrandContext: brandIds must be non-empty");
+  }
+  const { url, apiKey } = getConfig();
+  const response = await fetch(`${url}/orgs/brands/extract-fields`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "x-org-id": orgId,
+      "x-brand-id": brandIds.join(","),
+    },
+    body: JSON.stringify({
+      fields: JUDGE_BRAND_FIELDS.map((f) => ({
+        key: f.key,
+        description: f.description,
+      })),
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `brand-service POST /orgs/brands/extract-fields failed (${response.status}): ${body}`
+    );
+  }
+  const data = (await response.json()) as ExtractFieldsResponse;
+  const labels: Record<string, string> = {
+    industry: "Industry",
+    expertise: "Expertise",
+    targetAudience: "Target audience",
+    expertiseTopics: "Expertise topics",
+  };
+  return JUDGE_BRAND_FIELDS.map((f) => {
+    const value = coerceFieldValue(data.fields?.[f.key]?.value);
+    return `- ${labels[f.key] ?? f.key}: ${value}`;
+  }).join("\n");
+}
