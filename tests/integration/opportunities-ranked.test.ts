@@ -426,6 +426,132 @@ describe("POST /orgs/opportunities/ranked (pure-read)", () => {
   });
 });
 
+describe("GET /orgs/opportunities (canonical read)", () => {
+  beforeAll(async () => {
+    await cleanTestData();
+  });
+  beforeEach(async () => {
+    await cleanTestData();
+  });
+
+  function app() {
+    return createTestApp({});
+  }
+
+  it("returns empty list with total 0 when no quote_priorities rows exist", async () => {
+    const res = await request(app())
+      .get("/orgs/opportunities")
+      .set(AUTH_HEADERS);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      status: "ok",
+      opportunities: [],
+      total: 0,
+      brandIds: [TEST_BRAND],
+    });
+  });
+
+  it("rejects when x-brand-id header is missing", async () => {
+    const headers = { ...AUTH_HEADERS } as Record<string, string>;
+    delete headers["x-brand-id"];
+    const res = await request(app())
+      .get("/orgs/opportunities")
+      .set(headers);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/x-brand-id/);
+  });
+
+  it("rejects limit > 50 with 400", async () => {
+    const res = await request(app())
+      .get("/orgs/opportunities?limit=100")
+      .set(AUTH_HEADERS);
+    expect(res.status).toBe(400);
+  });
+
+  it("sorts by score desc, filters below threshold, honors ?limit=&offset=", async () => {
+    const high = await seedScoredOpportunity({
+      fingerprint: "g-high",
+      text: "high signal AI ethics",
+      outlet: "Forbes",
+      externalId: "g-1",
+      featuredQuestionId: 3001,
+      brandIds: [TEST_BRAND],
+      score: 95,
+    });
+    const mid = await seedScoredOpportunity({
+      fingerprint: "g-mid",
+      text: "mid signal SaaS pricing",
+      outlet: "TechCrunch",
+      externalId: "g-2",
+      featuredQuestionId: 3002,
+      brandIds: [TEST_BRAND],
+      score: 70,
+    });
+    await seedScoredOpportunity({
+      fingerprint: "g-low",
+      text: "low",
+      outlet: "BuzzFeed",
+      externalId: "g-3",
+      featuredQuestionId: 3003,
+      brandIds: [TEST_BRAND],
+      score: 20,
+    });
+
+    const all = await request(app())
+      .get("/orgs/opportunities")
+      .set(AUTH_HEADERS);
+    expect(all.status).toBe(200);
+    expect(all.body.opportunities.map((o: { opportunityId: string }) => o.opportunityId)).toEqual([
+      high,
+      mid,
+    ]);
+    expect(all.body.total).toBe(2);
+
+    const paged = await request(app())
+      .get("/orgs/opportunities?limit=1&offset=1")
+      .set(AUTH_HEADERS);
+    expect(paged.body.opportunities).toHaveLength(1);
+    expect(paged.body.opportunities[0].opportunityId).toBe(mid);
+    expect(paged.body.total).toBe(2);
+  });
+
+  it("scopes pitchStatus to the ?campaignId= query when provided", async () => {
+    const opp = await seedScoredOpportunity({
+      fingerprint: "g-camp",
+      text: "high signal camp",
+      externalId: "g-camp-1",
+      featuredQuestionId: 3100,
+      brandIds: [TEST_BRAND],
+      score: 90,
+    });
+    const silver = (
+      await db
+        .select()
+        .from(providerQuoteRequests)
+        .where(eq(providerQuoteRequests.externalId, "g-camp-1"))
+    )[0];
+    await db.insert(quotePitches).values({
+      quoteRequestId: silver.id,
+      quoteOpportunityId: opp,
+      campaignId: TEST_CAMPAIGN_A,
+      brandIds: [TEST_BRAND],
+      status: "submitted",
+      deliveryMethod: "featured_api",
+      orgId: TEST_ORG_A,
+    });
+
+    const sameCampaign = await request(app())
+      .get("/orgs/opportunities?campaignId=" + TEST_CAMPAIGN_A)
+      .set(AUTH_HEADERS);
+    expect(sameCampaign.body.opportunities[0].pitchStatus).toBe("submitted");
+
+    const otherCampaign = await request(app())
+      .get("/orgs/opportunities?campaignId=" + TEST_CAMPAIGN_B)
+      .set(AUTH_HEADERS);
+    expect(otherCampaign.body.opportunities[0].pitchStatus).toBeNull();
+  });
+});
+
 describe("GET /orgs/opportunities/stats", () => {
   beforeAll(async () => {
     await cleanTestData();

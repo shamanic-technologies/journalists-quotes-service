@@ -39,8 +39,10 @@ If we ever scale-out to multiple replicas, in-process state for "has this org be
 
 ## Routes
 
-- `POST /orgs/opportunities/next` — score-as-you-go write+read (above)
-- `POST /orgs/opportunities/ranked` — **pure-read** paginated list. SELECT-only over `quote_priorities ⋈ quote_opportunities`, filters expired deadlines, annotates with latest `pitchStatus`. Never scores. Body: `{ campaignId?, limit?, offset? }`. Used by HITL dashboard.
+- `POST /orgs/opportunities/next` — score-as-you-go write+read (above). **Identity is header-only — `x-brand-id`, `x-user-id`, `x-run-id`, `x-campaign-id` are ALL mandatory (400 if any missing); no request body.** campaignId moved body → `x-campaign-id` header; pitch-block scope is now always the `(brand-set, campaign)` tuple. Powers Feature 1 (auto-reply workflow loops `/next` → reply → repeat).
+- `POST /orgs/opportunities/discover` — **write-only batch scorer** (Feature 2 catalog fill). Scores ≤10 unscored submittable clusters for the brand-set ordered by **deadline ASC NULLS LAST** (urgency-first, the cheap pre-score priority proxy), pulling Featured premium from EQRS on local exhaustion. Returns `{ scored, exhausted, brandIds }` — NO opportunity payload. `exhausted: true` ONLY when, after an EQRS-premium ingest attempt, nothing remains to score (`scored: 0`). **Credit gate lives in the caller's workflow, NOT JQS** — each call = exactly one judge call (bounded cost), so the caller loops `while (!exhausted)` (budget-checking between calls) to drain the pool; overshoots a budget by at most one batch. Same mandatory headers as `/next`. Thin sibling of `pickNextOpportunity` (shares `selectUnscoredBatch`/`ingestPremiumQuestionsToSilver`/`scoreUnscored`), minus the best-1 selection + read.
+- `GET /orgs/opportunities` — **canonical pure-read** paginated list (the renamed read surface). SELECT-only over `quote_priorities ⋈ quote_opportunities`, filters expired deadlines + below-threshold, annotates latest `pitchStatus`. Never scores. Query: `?campaignId=&limit=&offset=` (campaignId optional). Polled by the HITL dashboard (~5s) for **both** features. Same body shape as `/ranked`.
+- `POST /orgs/opportunities/ranked` — **DEPRECATED alias** of `GET /orgs/opportunities` (identical read logic, params in body). ⚠️ **DO NOT DROP YET** — consumed by distribute.you dashboard + public report via api-service `POST /v1/orgs/opportunities/ranked` proxy. Dropped once in v0.9.0, broke prod, restored in v0.9.1. Drop only after the dashboard migrates to `GET /orgs/opportunities` (follow-up).
 - `GET /orgs/opportunities/stats` — brand-set scoped catalog metrics (silverPoolSize, scoredCount, eligibleCount, pitchedBlocking, expiredCount, bestEligibleScore). Pure read.
 - `POST /orgs/opportunities/:id/reply` — submit pitch. `:id` = Gold cluster id. Idempotent on `(quote_opportunity_id, brand_ids[])`.
 - `POST /webhooks/inbound-email` — HMAC-verified push from email-gateway-service (bronze ingest).
@@ -56,7 +58,7 @@ Every `/orgs/opportunities/*` route accepts `x-brand-id: <uuid>` (solo) or `<uui
 | Outbound | Why |
 |----------|-----|
 | `expert-quotes-requests-service` `GET /orgs/featured/premium-questions` + `POST /orgs/featured/answers` | Featured.com integration. **MVP ingests premium questions** (submittable feed, carry `featured_question_id`); discovery `GET /orgs/featured/opportunities` is no longer pulled (dormant client method). EQRS owns JWT + rate-limit + bronze raw payload + profile bootstrap. **EQRS also owns the `featured-api-pitch-submit` cost: it declares (provision → authorize → execute → actualize) + credit-gates the submit, since it performs the terminal Featured.com call. JQS does NOT declare or gate that cost — it surfaces EQRS's outcome (incl. 402 insufficient-credit) verbatim.** JQS pulls + submits via HTTP. |
-| `chat-service` `POST /complete` | LLM relevance judge (google/flash). One call per /next tick → 0-100 score + reasoning. |
+| `chat-service` `POST /complete` | LLM relevance judge (google/flash). One call per `/next` **or** `/discover` tick → 0-100 score + reasoning. Cost is NOT credit-gated by JQS (the consuming workflow owns the budget); each tick is bounded to ≤10 docs. |
 | `brand-service` `POST /orgs/brands/extract-fields` | Brand-set profile (industry/expertise/audience/topics) for the judge prompt. Cached 30d brand-side. |
 | `brand-service` | Brand metadata (HARO email signature). |
 | `email-gateway-service` `POST /orgs/send` | Outbound dispatch for `email_reply` delivery method. |
@@ -68,8 +70,9 @@ Featured.com is no longer a direct JQS dependency — EQRS owns it.
 
 - `pnpm test` runs unit + integration. Integration tests need a local Postgres reachable at `JOURNALISTS_QUOTES_SERVICE_DATABASE_URL` (DB schema applied via `pnpm drizzle-kit migrate` — see `tests/setup.ts` for the default URL).
 - `tests/setup.ts` hardcodes env defaults (`SCORE_THRESHOLD`, alias routing, etc.) that OVERRIDE the route-level `process.env.X ?? "default"`. **When you change a route's env default, update `tests/setup.ts` too** — otherwise eligibility/threshold tests fail against the stale test value (cost a cycle when `SCORE_THRESHOLD` moved 0.5→30).
-- EQRS HTTP client mock lives in `tests/helpers/mock-eqrs.ts` (`buildMockEqrsClient` + `makeOpportunity`; tracks `fetchCalls` + `fetchSinceLog` + `submitCalls`).
+- EQRS HTTP client mock lives in `tests/helpers/mock-eqrs.ts` (`buildMockEqrsClient` + `makeOpportunity` + `makePremiumQuestion`; tracks `fetchCalls` + `premiumFetchCalls` + `fetchSinceLog` + `submitCalls`). `/next` ingest uses premium questions (`state.premiumQuestions`); discovery `state.opportunities` is dormant.
 - Integration tests `vi.mock` `judge-client.js` (`judgeRelevance` → high/mid/low keyword scorer 85/50/15) + `brand-client.js` (`extractBrandContext` → stub text) to avoid live chat-service / brand-service calls.
+- **Tie-break flake**: equal-score opportunities tie-break on `first_seen_at ASC`, but Gold clusters created in ONE ingest batch share an identical `first_seen_at` (transaction `now()`) → tie order is non-deterministic. In `/next` tests where a specific winner is asserted after blocking the top one, give candidates **distinct** judge scores (different `high`/`mid` keywords) so the post-block winner is deterministic. Cost a flaky CI cycle on v0.11.1.
 
 ## Future evolution
 

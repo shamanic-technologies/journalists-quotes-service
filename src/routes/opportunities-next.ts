@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { z } from "zod";
 import {
   EqrsServiceError,
   pickNextOpportunity,
@@ -12,12 +11,12 @@ import {
   BrandIdsHeaderError,
   parseBrandIdsHeader,
 } from "../lib/brand-ids.js";
+import {
+  IdentityHeaderError,
+  requireOpportunityIdentity,
+} from "../lib/identity-guard.js";
 
 const SCORE_THRESHOLD = Number(process.env.SCORE_THRESHOLD ?? "30");
-
-const OpportunityNextRequestSchema = z.object({
-  campaignId: z.string().uuid().optional(),
-});
 
 export interface OpportunitiesNextDeps {
   eqrsClient?: EqrsClient;
@@ -41,18 +40,26 @@ export function createOpportunitiesNextRouter(
       throw err;
     }
 
-    const parsed = OpportunityNextRequestSchema.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.message });
-      return;
+    // x-user-id, x-run-id, x-campaign-id are mandatory on this route —
+    // it drives the LLM judge (tier-mirrored downstream) and is always
+    // invoked inside a campaign workflow. Fail loud, never 400 one hop
+    // later downstream.
+    let identity;
+    try {
+      identity = requireOpportunityIdentity(req);
+    } catch (err) {
+      if (err instanceof IdentityHeaderError) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
     }
-    const { campaignId } = parsed.data;
+    const { userId, campaignId } = identity;
     const orgId = req.orgId!;
-    const userId = req.userId;
     const runId = req.runId;
 
     console.log(
-      `[journalists-quotes-service] /next stage=request-entry orgId=${orgId} brandIds=${brandIds.join(",")} campaignId=${campaignId ?? "null"}`
+      `[journalists-quotes-service] /next stage=request-entry orgId=${orgId} brandIds=${brandIds.join(",")} campaignId=${campaignId}`
     );
 
     let best;
