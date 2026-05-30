@@ -142,14 +142,28 @@
           "error"
         ]
       },
-      "OpportunityNextRequest": {
+      "OpportunityDiscoverResponse": {
         "type": "object",
         "properties": {
-          "campaignId": {
-            "type": "string",
-            "format": "uuid"
+          "scored": {
+            "type": "integer"
+          },
+          "exhausted": {
+            "type": "boolean"
+          },
+          "brandIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
           }
-        }
+        },
+        "required": [
+          "scored",
+          "exhausted",
+          "brandIds"
+        ]
       },
       "PitchStatus": {
         "type": "string",
@@ -774,13 +788,222 @@
     },
     "/orgs/opportunities/next": {
       "post": {
-        "summary": "Return the single highest-scored Gold-cluster opportunity not yet pitched for the brand-set. Mirrors lead-service POST /orgs/buffer/next semantics. Brand identity flows via x-brand-id header (CSV when plural). Excludes opportunities with a non-retryable pitch (drafted/submitted/selected/published/not_selected) on the exact brand-set. Returns { found: false } when nothing eligible remains.",
+        "summary": "Return the single highest-scored Gold-cluster opportunity not yet pitched for the brand-set (campaign-scoped). Score-as-you-go: scores ≤10 unscored clusters then returns the best non-pitched candidate. Identity flows entirely via headers — x-brand-id (CSV when plural), x-user-id, x-run-id, x-campaign-id are ALL required (no request body). Pitch-block scope is the (brand-set, campaign) tuple. Returns { found: false } when nothing eligible remains.",
         "security": [
           {
             "ApiKeyAuth": []
           }
         ],
         "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-org-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted)."
+            },
+            "required": true,
+            "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted).",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-user-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-run-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-campaign-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Next available opportunity, or { found: false }",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpportunityNextResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error (missing/invalid x-brand-id, x-user-id, x-run-id, or x-campaign-id header)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream service unavailable (EQRS, chat-service)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/opportunities/discover": {
+      "post": {
+        "summary": "Write-only batch scorer. Scores ≤10 unscored submittable clusters for the brand-set (ordered by deadline urgency), pulling Featured premium questions from EQRS when the silver pool is exhausted. Returns { scored, exhausted } — no opportunity payload; read the catalog via GET /orgs/opportunities. The caller loops `while (!exhausted)` (credit-gating between calls in its own workflow) to drain the whole submittable pool. Same mandatory headers as /next.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-org-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted)."
+            },
+            "required": true,
+            "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted).",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-user-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-run-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-campaign-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Batch result: number scored this call + whether the pool is drained",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpportunityDiscoverResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error (missing/invalid x-brand-id, x-user-id, x-run-id, or x-campaign-id header)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream service unavailable (EQRS, chat-service)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/opportunities": {
+      "get": {
+        "summary": "Paginated read-only list of scored Gold-cluster opportunities for the brand-set above SCORE_THRESHOLD, sorted by score desc. Pure-read (no scoring, no ingest) — the canonical read surface, polled by the HITL dashboard. Query: `?campaignId=&limit=&offset=` (campaignId optional; pitchStatus annotated for that campaign when set, else brand-set wide). Brand identity via x-brand-id header (CSV when plural).",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": false,
+            "name": "campaignId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "nullable": true,
+              "minimum": 0
+            },
+            "required": false,
+            "name": "offset",
+            "in": "query"
+          },
           {
             "schema": {
               "type": "string",
@@ -801,38 +1024,19 @@
             "in": "header"
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/OpportunityNextRequest"
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
-            "description": "Next available opportunity, or { found: false }",
+            "description": "Ranked opportunities above SCORE_THRESHOLD, sorted by score desc",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OpportunityNextResponse"
+                  "$ref": "#/components/schemas/OpportunityRankedResponse"
                 }
               }
             }
           },
           "400": {
-            "description": "Validation error (missing/invalid x-brand-id header, bad body)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "Upstream service unavailable (key-service, Featured)",
+            "description": "Validation error (missing/invalid x-brand-id header or query params)",
             "content": {
               "application/json": {
                 "schema": {
@@ -846,7 +1050,7 @@
     },
     "/orgs/opportunities/ranked": {
       "post": {
-        "summary": "Paginated read-only list of RAG-scored Gold-cluster opportunities for the brand-set. Body: `{ campaignId?, limit?, offset? }`. Reads from `quote_priorities` populated by `/orgs/opportunities/next`; never scores synchronously. Annotated with the latest `pitchStatus` for the exact brand-set (campaign-scoped if `campaignId` provided). Used by the HITL dashboard + public report queue.",
+        "summary": "DEPRECATED alias of `GET /orgs/opportunities` (kept until consumers migrate). Paginated read-only list of scored Gold-cluster opportunities for the brand-set. Body: `{ campaignId?, limit?, offset? }`. Reads from `quote_priorities`; never scores synchronously. Annotated with the latest `pitchStatus` for the exact brand-set (campaign-scoped if `campaignId` provided).",
         "security": [
           {
             "ApiKeyAuth": []

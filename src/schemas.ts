@@ -158,11 +158,13 @@ export const QuotePitchListQuerySchema = z.object({
 
 // ==================== Opportunity Workflow Schemas ====================
 
-export const OpportunityNextRequestSchema = z
+export const OpportunityDiscoverResponseSchema = z
   .object({
-    campaignId: z.string().uuid().optional(),
+    scored: z.number().int(),
+    exhausted: z.boolean(),
+    brandIds: z.array(z.string().uuid()),
   })
-  .openapi("OpportunityNextRequest");
+  .openapi("OpportunityDiscoverResponse");
 
 export const OpportunityReplyRequestSchema = z
   .object({
@@ -327,6 +329,22 @@ const orgHeadersOptionalBrand = z.object({
   "x-org-id": z.string().uuid(),
 });
 
+// Mandatory header set for the score-as-you-go routes (/next + /discover):
+// org + brand + user + run + campaign. Both drive the LLM judge
+// (tier-mirrored downstream needing x-user-id + x-run-id) and are always
+// invoked inside a campaign workflow (x-campaign-id required).
+const orgHeadersScoring = z.object({
+  "x-org-id": z.string().uuid(),
+  "x-brand-id": z
+    .string()
+    .describe(
+      "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted)."
+    ),
+  "x-user-id": z.string().uuid(),
+  "x-run-id": z.string().uuid(),
+  "x-campaign-id": z.string().uuid(),
+});
+
 registry.registerPath({
   method: "get",
   path: "/health",
@@ -351,15 +369,10 @@ registry.registerPath({
   method: "post",
   path: "/orgs/opportunities/next",
   summary:
-    "Return the single highest-scored Gold-cluster opportunity not yet pitched for the brand-set. Mirrors lead-service POST /orgs/buffer/next semantics. Brand identity flows via x-brand-id header (CSV when plural). Excludes opportunities with a non-retryable pitch (drafted/submitted/selected/published/not_selected) on the exact brand-set. Returns { found: false } when nothing eligible remains.",
+    "Return the single highest-scored Gold-cluster opportunity not yet pitched for the brand-set (campaign-scoped). Score-as-you-go: scores ≤10 unscored clusters then returns the best non-pitched candidate. Identity flows entirely via headers — x-brand-id (CSV when plural), x-user-id, x-run-id, x-campaign-id are ALL required (no request body). Pitch-block scope is the (brand-set, campaign) tuple. Returns { found: false } when nothing eligible remains.",
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
-    headers: orgHeaders,
-    body: {
-      content: {
-        "application/json": { schema: OpportunityNextRequestSchema },
-      },
-    },
+    headers: orgHeadersScoring,
   },
   responses: {
     200: {
@@ -369,11 +382,69 @@ registry.registerPath({
       },
     },
     400: {
-      description: "Validation error (missing/invalid x-brand-id header, bad body)",
+      description:
+        "Validation error (missing/invalid x-brand-id, x-user-id, x-run-id, or x-campaign-id header)",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
     502: {
-      description: "Upstream service unavailable (key-service, Featured)",
+      description: "Upstream service unavailable (EQRS, chat-service)",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/orgs/opportunities/discover",
+  summary:
+    "Write-only batch scorer. Scores ≤10 unscored submittable clusters for the brand-set (ordered by deadline urgency), pulling Featured premium questions from EQRS when the silver pool is exhausted. Returns { scored, exhausted } — no opportunity payload; read the catalog via GET /orgs/opportunities. The caller loops `while (!exhausted)` (credit-gating between calls in its own workflow) to drain the whole submittable pool. Same mandatory headers as /next.",
+  security: [{ [apiKeyAuth.name]: [] }],
+  request: {
+    headers: orgHeadersScoring,
+  },
+  responses: {
+    200: {
+      description:
+        "Batch result: number scored this call + whether the pool is drained",
+      content: {
+        "application/json": { schema: OpportunityDiscoverResponseSchema },
+      },
+    },
+    400: {
+      description:
+        "Validation error (missing/invalid x-brand-id, x-user-id, x-run-id, or x-campaign-id header)",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    502: {
+      description: "Upstream service unavailable (EQRS, chat-service)",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/opportunities",
+  summary:
+    "Paginated read-only list of scored Gold-cluster opportunities for the brand-set above SCORE_THRESHOLD, sorted by score desc. Pure-read (no scoring, no ingest) — the canonical read surface, polled by the HITL dashboard. Query: `?campaignId=&limit=&offset=` (campaignId optional; pitchStatus annotated for that campaign when set, else brand-set wide). Brand identity via x-brand-id header (CSV when plural).",
+  security: [{ [apiKeyAuth.name]: [] }],
+  request: {
+    headers: orgHeaders,
+    query: z.object({
+      campaignId: z.string().uuid().optional(),
+      limit: z.coerce.number().int().min(1).max(50).optional(),
+      offset: z.coerce.number().int().min(0).optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Ranked opportunities above SCORE_THRESHOLD, sorted by score desc",
+      content: {
+        "application/json": { schema: OpportunityRankedResponseSchema },
+      },
+    },
+    400: {
+      description: "Validation error (missing/invalid x-brand-id header or query params)",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
   },
@@ -383,7 +454,7 @@ registry.registerPath({
   method: "post",
   path: "/orgs/opportunities/ranked",
   summary:
-    "Paginated read-only list of RAG-scored Gold-cluster opportunities for the brand-set. Body: `{ campaignId?, limit?, offset? }`. Reads from `quote_priorities` populated by `/orgs/opportunities/next`; never scores synchronously. Annotated with the latest `pitchStatus` for the exact brand-set (campaign-scoped if `campaignId` provided). Used by the HITL dashboard + public report queue.",
+    "DEPRECATED alias of `GET /orgs/opportunities` (kept until consumers migrate). Paginated read-only list of scored Gold-cluster opportunities for the brand-set. Body: `{ campaignId?, limit?, offset? }`. Reads from `quote_priorities`; never scores synchronously. Annotated with the latest `pitchStatus` for the exact brand-set (campaign-scoped if `campaignId` provided).",
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
     headers: orgHeaders,
