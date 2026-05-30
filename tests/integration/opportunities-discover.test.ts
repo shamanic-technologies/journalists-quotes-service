@@ -13,6 +13,7 @@ import {
   AUTH_HEADERS,
   TEST_BRAND,
   TEST_ORG_A,
+  TEST_USER,
 } from "../helpers/test-app.js";
 import { cleanTestData, closeDb } from "../helpers/test-db.js";
 import { db } from "../../src/db/index.js";
@@ -130,6 +131,13 @@ describe("POST /orgs/opportunities/discover (write-only batch scorer)", () => {
     const rows = await db.select().from(quotePriorities);
     expect(rows).toHaveLength(10);
     expect(vi.mocked(judgeRelevance)).toHaveBeenCalledTimes(1);
+    // Regression: scoreUnscored must forward userId to brand-service
+    // extract-fields (it 400s without x-user-id).
+    expect(vi.mocked(extractBrandContext)).toHaveBeenCalledWith(
+      [TEST_BRAND],
+      TEST_ORG_A,
+      TEST_USER
+    );
   });
 
   it("loops to drain the whole submittable pool, ending on { scored: 0, exhausted: true }", async () => {
