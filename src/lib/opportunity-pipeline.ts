@@ -625,16 +625,22 @@ async function scoreUnscored(args: {
   const { candidates, orgId, brandIds, campaignId, userId, runId } = args;
   if (candidates.length === 0) return;
 
-  // brand-service /orgs/brands/extract-fields hard-requires x-user-id.
-  // /next + /discover guarantee it via requireOpportunityIdentity; guard
-  // fail-loud so any other caller can't silently produce a 400 one hop later.
+  // brand-service /orgs/brands/extract-fields is an org-route: it hard-requires
+  // x-user-id AND x-run-id. /next + /discover guarantee both (userId via
+  // requireOpportunityIdentity, runId via withRunTracking); guard fail-loud so
+  // any other caller can't silently produce a 400 one hop later.
   if (!userId) {
     throw new Error(
       "scoreUnscored: userId is required (brand-service extract-fields needs x-user-id)"
     );
   }
+  if (!runId) {
+    throw new Error(
+      "scoreUnscored: runId is required (brand-service extract-fields needs x-run-id)"
+    );
+  }
 
-  const brandContext = await extractBrandContext(brandIds, orgId, userId);
+  const brandContext = await extractBrandContext(brandIds, orgId, userId, runId);
 
   const response = await judgeRelevance({
     documents: candidates.map((c) => ({
