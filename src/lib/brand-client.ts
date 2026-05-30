@@ -78,20 +78,26 @@ function coerceFieldValue(value: unknown): string {
  * brand-service consolidates multi-brand values. Results are cached
  * 30 days brand-side, so repeat calls for the same brand-set are cheap.
  *
- * `x-user-id` is mandatory on brand-service `/orgs/brands/extract-fields`
- * (it 400s without it), so it is forwarded unconditionally — mirroring
- * the inbound `/next` + `/discover` identity tier (`requireOpportunityIdentity`).
+ * brand-service `/orgs/brands/extract-fields` is an org-route: it hard-requires
+ * the full identity trio `x-org-id` + `x-user-id` + `x-run-id` (400 on any
+ * missing). All three are forwarded unconditionally — mirroring the inbound
+ * `/next` + `/discover` identity tier (`requireOpportunityIdentity`) and the
+ * `judge-client` chat-service call.
  */
 export async function extractBrandContext(
   brandIds: string[],
   orgId: string,
-  userId: string
+  userId: string,
+  runId: string
 ): Promise<string> {
   if (brandIds.length === 0) {
     throw new Error("extractBrandContext: brandIds must be non-empty");
   }
   if (!userId) {
     throw new Error("extractBrandContext: userId must be non-empty");
+  }
+  if (!runId) {
+    throw new Error("extractBrandContext: runId must be non-empty");
   }
   const { url, apiKey } = getConfig();
   const response = await fetch(`${url}/orgs/brands/extract-fields`, {
@@ -101,6 +107,7 @@ export async function extractBrandContext(
       "x-api-key": apiKey,
       "x-org-id": orgId,
       "x-user-id": userId,
+      "x-run-id": runId,
       "x-brand-id": brandIds.join(","),
     },
     body: JSON.stringify({

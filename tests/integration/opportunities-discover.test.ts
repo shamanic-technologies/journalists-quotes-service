@@ -14,6 +14,7 @@ import {
   TEST_BRAND,
   TEST_ORG_A,
   TEST_USER,
+  TEST_PARENT_RUN,
 } from "../helpers/test-app.js";
 import { cleanTestData, closeDb } from "../helpers/test-db.js";
 import { db } from "../../src/db/index.js";
@@ -131,12 +132,13 @@ describe("POST /orgs/opportunities/discover (write-only batch scorer)", () => {
     const rows = await db.select().from(quotePriorities);
     expect(rows).toHaveLength(10);
     expect(vi.mocked(judgeRelevance)).toHaveBeenCalledTimes(1);
-    // Regression: scoreUnscored must forward userId to brand-service
-    // extract-fields (it 400s without x-user-id).
+    // Regression: scoreUnscored must forward the identity trio to brand-service
+    // extract-fields (it 400s without x-user-id / x-run-id).
     expect(vi.mocked(extractBrandContext)).toHaveBeenCalledWith(
       [TEST_BRAND],
       TEST_ORG_A,
-      TEST_USER
+      TEST_USER,
+      TEST_PARENT_RUN
     );
   });
 
