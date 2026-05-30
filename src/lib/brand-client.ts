@@ -77,13 +77,21 @@ function coerceFieldValue(value: unknown): string {
  * Reads brand identity from the `x-brand-id` header (CSV when plural);
  * brand-service consolidates multi-brand values. Results are cached
  * 30 days brand-side, so repeat calls for the same brand-set are cheap.
+ *
+ * `x-user-id` is mandatory on brand-service `/orgs/brands/extract-fields`
+ * (it 400s without it), so it is forwarded unconditionally — mirroring
+ * the inbound `/next` + `/discover` identity tier (`requireOpportunityIdentity`).
  */
 export async function extractBrandContext(
   brandIds: string[],
-  orgId: string
+  orgId: string,
+  userId: string
 ): Promise<string> {
   if (brandIds.length === 0) {
     throw new Error("extractBrandContext: brandIds must be non-empty");
+  }
+  if (!userId) {
+    throw new Error("extractBrandContext: userId must be non-empty");
   }
   const { url, apiKey } = getConfig();
   const response = await fetch(`${url}/orgs/brands/extract-fields`, {
@@ -92,6 +100,7 @@ export async function extractBrandContext(
       "Content-Type": "application/json",
       "x-api-key": apiKey,
       "x-org-id": orgId,
+      "x-user-id": userId,
       "x-brand-id": brandIds.join(","),
     },
     body: JSON.stringify({
