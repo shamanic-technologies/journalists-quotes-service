@@ -7,6 +7,10 @@ import {
   type OpportunitiesNextDeps,
 } from "../../src/routes/opportunities-next.js";
 import {
+  createOpportunitiesDiscoverRouter,
+  type OpportunitiesDiscoverDeps,
+} from "../../src/routes/opportunities-discover.js";
+import {
   createOpportunitiesRankedRouter,
   type OpportunitiesRankedDeps,
 } from "../../src/routes/opportunities-ranked.js";
@@ -27,6 +31,7 @@ import { hmacVerify } from "../../src/middleware/hmac-verify.js";
 
 export interface TestAppDeps {
   opportunitiesNextDeps?: OpportunitiesNextDeps;
+  opportunitiesDiscoverDeps?: OpportunitiesDiscoverDeps;
   opportunitiesRankedDeps?: OpportunitiesRankedDeps;
   opportunityReplyDeps?: OpportunityReplyDeps;
   skipHmacVerify?: boolean;
@@ -58,6 +63,7 @@ export function createTestApp(deps: TestAppDeps = {}) {
 
   app.use("/orgs", apiKeyAuth, requireOrgId, withRunTracking);
   app.use(createOpportunitiesNextRouter(deps.opportunitiesNextDeps));
+  app.use(createOpportunitiesDiscoverRouter(deps.opportunitiesDiscoverDeps));
   app.use(createOpportunitiesRankedRouter(deps.opportunitiesRankedDeps));
   app.use(createOpportunityReplyRouter(deps.opportunityReplyDeps));
   app.use(quoteRequestsRoutes);
@@ -97,6 +103,10 @@ export const AUTH_HEADERS = {
   "x-user-id": TEST_USER,
   "x-run-id": TEST_PARENT_RUN,
   "x-brand-id": TEST_BRAND,
+  // /next + /discover require x-campaign-id. /ranked + /reply + /stats
+  // read campaignId from body/query and ignore this header, so its
+  // presence in the shared default is inert for them.
+  "x-campaign-id": TEST_CAMPAIGN_A,
 };
 
 export const AUTH_HEADERS_ORG_B = {

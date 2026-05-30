@@ -306,6 +306,21 @@ describe("POST /orgs/opportunities/next (premium questions)", () => {
     expect(res.body.error).toMatch(/x-brand-id/);
   });
 
+  it.each([
+    ["x-user-id", /x-user-id/],
+    ["x-run-id", /x-run-id/],
+    ["x-campaign-id", /x-campaign-id/],
+  ])("rejects when %s header is missing (mandatory)", async (header, re) => {
+    const headers = { ...AUTH_HEADERS } as Record<string, string>;
+    delete headers[header];
+    const res = await request(app())
+      .post("/orgs/opportunities/next")
+      .set(headers)
+      .send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(re);
+  });
+
   it("returns the single highest-scored Gold opportunity with brandIds echoed", async () => {
     state.premiumQuestions = [
       makePremiumQuestion({
@@ -378,6 +393,7 @@ describe("POST /orgs/opportunities/next (premium questions)", () => {
     await db.insert(quotePitches).values({
       quoteRequestId: silverTop.id,
       quoteOpportunityId: firstGoldId,
+      campaignId: TEST_CAMPAIGN_A,
       brandIds: [TEST_BRAND],
       status: "submitted",
       deliveryMethod: "featured_api",

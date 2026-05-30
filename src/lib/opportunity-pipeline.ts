@@ -553,11 +553,28 @@ const UNSCORED_BATCH_SIZE = 10;
  * Returned rows are the minimum needed for the judge: opportunityId +
  * text. The /reply path uses pickRepresentativeSilver elsewhere — this
  * helper is a scoring-batch picker, not a UI-row builder.
+ *
+ * `orderBy` controls which clusters win a partial scoring sweep:
+ *   - "firstSeen" (default, used by /next): oldest cluster first —
+ *     deterministic FIFO.
+ *   - "deadline" (used by /discover): soonest canonical_deadline first
+ *     (NULLS LAST), first_seen_at as the tiebreak. When a budget-bounded
+ *     /discover loop is cut short, the most urgent (soon-expiring)
+ *     clusters are the ones that got scored.
  */
 async function selectUnscoredBatch(
   orgId: string,
-  brandIds: string[]
+  brandIds: string[],
+  orderBy: "firstSeen" | "deadline" = "firstSeen"
 ): Promise<{ opportunityId: string; opportunityText: string }[]> {
+  const ordering =
+    orderBy === "deadline"
+      ? [
+          drizzleSql`${quoteOpportunities.canonicalDeadline} ASC NULLS LAST`,
+          drizzleSql`${quoteOpportunities.firstSeenAt} ASC`,
+        ]
+      : [drizzleSql`${quoteOpportunities.firstSeenAt} ASC`];
+
   const rows = await db
     .select({
       opportunityId: quoteOpportunities.id,
@@ -581,7 +598,7 @@ async function selectUnscoredBatch(
         submittableSilverExists(orgId)
       )
     )
-    .orderBy(quoteOpportunities.firstSeenAt)
+    .orderBy(...ordering)
     .limit(UNSCORED_BATCH_SIZE);
 
   return rows;
@@ -1184,4 +1201,74 @@ export async function pickNextOpportunity(args: {
   );
 
   return best;
+}
+
+/**
+ * One /discover pipeline call. Write-only catalog filler — the
+ * exhaustive sibling of pickNextOpportunity:
+ *
+ *   1. Pick at most UNSCORED_BATCH_SIZE unscored submittable clusters
+ *      for the brand-set tuple, ordered by deadline urgency
+ *      (soonest-first). No score is known pre-judge, so urgency is the
+ *      cheap priority proxy — if a budget-bounded loop is cut short, the
+ *      soon-expiring opportunities are the ones that got scored.
+ *   2. If the silver pool is exhausted, pull Featured PREMIUM questions
+ *      from EQRS into silver + Gold and re-pick.
+ *   3. Score whatever was found (one multi-brand judge call) and persist
+ *      to quote_priorities.
+ *
+ * Returns `{ scored, exhausted }` and nothing else — the caller reads the
+ * catalog via GET /orgs/opportunities. `exhausted` is true ONLY when, after
+ * an EQRS-premium ingest attempt, there is nothing left to score (scored=0).
+ * The credit gate lives in the caller's workflow, NOT here: each call costs
+ * exactly one judge call (≤ UNSCORED_BATCH_SIZE docs), so a `while (!exhausted)`
+ * loop overshoots a budget by at most one batch. Callers loop until
+ * `exhausted` to drain the whole submittable pool for the brand-set.
+ */
+export async function scoreNextBatch(args: {
+  orgId: string;
+  brandIds: string[];
+  campaignId: string;
+  userId?: string;
+  runId?: string;
+  eqrsClient: EqrsClient;
+}): Promise<{ scored: number; exhausted: boolean }> {
+  const { orgId, brandIds, campaignId, userId, runId, eqrsClient } = args;
+
+  const startedAt = Date.now();
+  const brandIdsLabel = brandIds.join(",");
+
+  // Priority = deadline urgency (soonest first) so a budget-truncated
+  // /discover loop scores the most time-sensitive opportunities first.
+  let unscored = await selectUnscoredBatch(orgId, brandIds, "deadline");
+
+  if (unscored.length === 0) {
+    // Silver pool exhausted for this brand-set tuple. Pull Featured
+    // PREMIUM questions from EQRS (idempotent upsert; no cursor) and
+    // re-pick. EqrsServiceError propagates to the route → 502.
+    await ingestPremiumQuestionsToSilver({ orgId, userId, runId, eqrsClient });
+    unscored = await selectUnscoredBatch(orgId, brandIds, "deadline");
+  }
+
+  if (unscored.length === 0) {
+    console.log(
+      `[journalists-quotes-service] /discover stage=exhausted orgId=${orgId} brandIds=${brandIdsLabel} campaignId=${campaignId} totalMs=${Date.now() - startedAt}`
+    );
+    return { scored: 0, exhausted: true };
+  }
+
+  await scoreUnscored({
+    candidates: unscored,
+    orgId,
+    brandIds,
+    campaignId,
+    userId,
+    runId,
+  });
+
+  console.log(
+    `[journalists-quotes-service] /discover stage=scored orgId=${orgId} brandIds=${brandIdsLabel} campaignId=${campaignId} scoredCount=${unscored.length} totalMs=${Date.now() - startedAt}`
+  );
+
+  return { scored: unscored.length, exhausted: false };
 }
