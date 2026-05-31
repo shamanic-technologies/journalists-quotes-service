@@ -232,24 +232,6 @@
           "brandIds"
         ]
       },
-      "OpportunityRankedRequest": {
-        "type": "object",
-        "properties": {
-          "campaignId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 50
-          },
-          "offset": {
-            "type": "integer",
-            "minimum": 0
-          }
-        }
-      },
       "OpportunityStatsResponse": {
         "type": "object",
         "properties": {
@@ -1037,68 +1019,6 @@
           },
           "400": {
             "description": "Validation error (missing/invalid x-brand-id header or query params)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/orgs/opportunities/ranked": {
-      "post": {
-        "summary": "DEPRECATED alias of `GET /orgs/opportunities` (kept until consumers migrate). Paginated read-only list of scored Gold-cluster opportunities for the brand-set. Body: `{ campaignId?, limit?, offset? }`. Reads from `quote_priorities`; never scores synchronously. Annotated with the latest `pitchStatus` for the exact brand-set (campaign-scoped if `campaignId` provided).",
-        "security": [
-          {
-            "ApiKeyAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "required": true,
-            "name": "x-org-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted). All ranking, score caching, and pitch idempotency keys use the canonical brand_ids[] set."
-            },
-            "required": true,
-            "description": "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted). All ranking, score caching, and pitch idempotency keys use the canonical brand_ids[] set.",
-            "name": "x-brand-id",
-            "in": "header"
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/OpportunityRankedRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Ranked opportunities above SCORE_THRESHOLD, sorted by score desc",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OpportunityRankedResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation error (missing/invalid x-brand-id header, bad body)",
             "content": {
               "application/json": {
                 "schema": {
