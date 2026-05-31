@@ -11,12 +11,6 @@ import {
 
 const SCORE_THRESHOLD = Number(process.env.SCORE_THRESHOLD ?? "30");
 
-const OpportunityRankedRequestSchema = z.object({
-  campaignId: z.string().uuid().optional(),
-  limit: z.number().int().min(1).max(50).optional(),
-  offset: z.number().int().min(0).optional(),
-});
-
 // GET variant of the ranked read: same filter + shape, params from the
 // query string. limit/offset arrive as strings → coerce.
 const OpportunitiesGetQuerySchema = z.object({
@@ -69,44 +63,9 @@ export function createOpportunitiesRankedRouter(
 ): Router {
   const router = Router();
 
-  router.post("/orgs/opportunities/ranked", async (req, res) => {
-    let brandIds: string[];
-    try {
-      brandIds = parseBrandIdsHeader(req.headers["x-brand-id"]);
-    } catch (err) {
-      if (err instanceof BrandIdsHeaderError) {
-        res.status(400).json({ error: err.message });
-        return;
-      }
-      throw err;
-    }
-
-    const parsed = OpportunityRankedRequestSchema.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.message });
-      return;
-    }
-    const { campaignId } = parsed.data;
-    const limit = parsed.data.limit ?? 20;
-    const offset = parsed.data.offset ?? 0;
-    const orgId = req.orgId!;
-
-    const { rows, total } = await selectRankedPage({
-      orgId,
-      brandIds,
-      campaignId,
-      limit,
-      offset,
-      scoreThreshold: SCORE_THRESHOLD,
-    });
-
-    res.json(buildRankedResponse(rows, total, brandIds));
-  });
-
-  // GET /orgs/opportunities — canonical pure-read list (renamed read
-  // surface). Same filter + body shape as POST /ranked, params from the
-  // query string. Dashboard polls this; POST /ranked is kept as a
-  // deprecated alias until consumers migrate.
+  // GET /orgs/opportunities — canonical pure-read list. SELECT-only over
+  // quote_priorities ⋈ quote_opportunities, params from the query string.
+  // Polled by the HITL dashboard (~5s).
   router.get("/orgs/opportunities", async (req, res) => {
     let brandIds: string[];
     try {

@@ -9,7 +9,7 @@ import { attachOrCreateCluster } from "../cluster/attach.js";
 /**
  * Sentinel org_id for email-sourced opportunities. The same HARO query is
  * visible to every org, so silver rows live in a shared pool keyed by this
- * UUID. The ranked-queue pipeline (`/orgs/opportunities/ranked`) queries
+ * UUID. The opportunity-catalog read (`GET /orgs/opportunities`) queries
  * `WHERE org_id IN (req.orgId, SHARED_EMAIL_ORG_ID)` to merge the org's
  * API-sourced rows with the shared email pool.
  */
