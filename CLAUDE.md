@@ -57,14 +57,16 @@ Every `/orgs/opportunities/*` route accepts `x-brand-id: <uuid>` (solo) or `<uui
 
 | Outbound | Why |
 |----------|-----|
-| `expert-quotes-requests-service` `GET /orgs/featured/premium-questions` + `POST /orgs/featured/answers` | Featured.com integration. **MVP ingests premium questions** (submittable feed, carry `featured_question_id`); discovery `GET /orgs/featured/opportunities` is no longer pulled (dormant client method). EQRS owns JWT + rate-limit + bronze raw payload + profile bootstrap. **EQRS also owns the `featured-api-pitch-submit` cost: it declares (provision → authorize → execute → actualize) + credit-gates the submit, since it performs the terminal Featured.com call. JQS does NOT declare or gate that cost — it surfaces EQRS's outcome (incl. 402 insufficient-credit) verbatim.** JQS pulls + submits via HTTP. |
+| `expert-quotes-requests-service` `GET /orgs/featured/premium-questions` + `POST /orgs/featured/answers` | Featured.com integration. **MVP ingests premium questions** (submittable feed, carry `featured_question_id`); discovery `GET /orgs/featured/opportunities` is no longer pulled (dormant client method). EQRS owns JWT + rate-limit + bronze raw payload + profile bootstrap. **EQRS also owns the `featured-api-pitch-submit` cost: it declares (provision → authorize → execute → actualize) + credit-gates the submit, since it performs the terminal Featured.com call. JQS does NOT declare or gate that cost — it surfaces EQRS's outcome (incl. 402 insufficient-credit) verbatim.** JQS pulls + submits via HTTP. **`mediaOutlet` on premium questions is EQRS-derived (v0.1.10): Featured's `/premium-question-list` has NO outlet field — EQRS derives it from `sourceUrl` hostname (bare host, lowercased; e.g. `dice.com`), `null` only when no source. JQS maps `q.mediaOutlet` verbatim — outlet looks like a bare domain by design. DIS-113.** |
 | `chat-service` `POST /complete` | LLM relevance judge (google/flash). One call per `/next` **or** `/discover` tick → 0-100 score + reasoning. Cost is NOT credit-gated by JQS (the consuming workflow owns the budget); each tick is bounded to ≤10 docs. |
-| `brand-service` `POST /orgs/brands/extract-fields` | Brand-set profile (industry/expertise/audience/topics) for the judge prompt. Cached 30d brand-side. |
+| `brand-service` `POST /orgs/brands/extract-fields` | Brand-set profile (industry/expertise/audience/topics) for the judge prompt. Cached 30d brand-side. **Org-route: JQS must forward the full identity trio `x-org-id` + `x-user-id` + `x-run-id` (see invariant below).** |
 | `brand-service` | Brand metadata (HARO email signature). |
 | `email-gateway-service` `POST /orgs/send` | Outbound dispatch for `email_reply` delivery method. |
 | `runs-service` | Run tracking (`withRunTracking` middleware). |
 
 Featured.com is no longer a direct JQS dependency — EQRS owns it.
+
+**Identity-trio invariant (outbound org-routes).** Any JQS→sibling call to an `/orgs/*` route hard-requires the full identity trio `x-org-id` + `x-user-id` + `x-run-id` and validates them **in order** (a missing header 400s on the first one it checks, masking the rest). Forward all three at once — `x-org-id` from `req.orgId`, `x-user-id` from `requireOpportunityIdentity`, `x-run-id` from `req.runId` (`withRunTracking`). `brand-client.extractBrandContext` + `judge-client.judgeRelevance` both do this. Fixing only the header the error names produces a multi-pass prod fix (incident v0.12.1→v0.12.2: added `x-user-id`, redeployed, then hit `x-run-id`). `x-campaign-id` is NOT part of the trio — brand-service uses it only for cache scoping, never 400s on it.
 
 ## Tests
 
