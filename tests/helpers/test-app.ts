@@ -103,9 +103,9 @@ export const AUTH_HEADERS = {
   "x-user-id": TEST_USER,
   "x-run-id": TEST_PARENT_RUN,
   "x-brand-id": TEST_BRAND,
-  // /next + /discover require x-campaign-id. /ranked + /reply + /stats
-  // read campaignId from body/query and ignore this header, so its
-  // presence in the shared default is inert for them.
+  // /next + /discover require x-campaign-id. GET /orgs/opportunities +
+  // /reply + /stats read campaignId from query/body and ignore this
+  // header, so its presence in the shared default is inert for them.
   "x-campaign-id": TEST_CAMPAIGN_A,
 };
 
