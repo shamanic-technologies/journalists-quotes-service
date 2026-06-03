@@ -686,11 +686,11 @@ async function scoreUnscored(args: {
 }
 
 /**
- * Return the single best Gold cluster for (orgId, brandIds, campaignId?):
+ * Return the single best Gold cluster for (orgId, brandIds):
  *   - score >= scoreThreshold
  *   - canonical_deadline > now() OR NULL
- *   - no blocking quote_pitches row on the EXACT brand-set tuple
- *     (campaign-scoped if campaignId provided, brand-only otherwise)
+ *   - no blocking quote_pitches row for the brand-set under ANY campaign
+ *     (atomic per-brand exclusion — never campaign-scoped)
  *   - at least one silver row in the org's pool (own or SHARED_EMAIL_ORG_ID)
  *
  * Tie-break on score: oldest Gold cluster wins (first_seen_at ASC). Returns
@@ -699,22 +699,22 @@ async function scoreUnscored(args: {
 async function selectBestNonPitched(args: {
   orgId: string;
   brandIds: string[];
-  campaignId?: string;
   scoreThreshold: number;
 }): Promise<RankedOpportunity | null> {
-  const { orgId, brandIds, campaignId, scoreThreshold } = args;
+  const { orgId, brandIds, scoreThreshold } = args;
 
   // Anti-join sub-select: which Gold cluster ids are blocked by a pitch?
-  const pitchScope = campaignId
-    ? and(
-        eq(quotePitches.brandIds, brandIds),
-        eq(quotePitches.campaignId, campaignId),
-        inArray(quotePitches.status, BLOCK_STATUSES)
-      )
-    : and(
-        eq(quotePitches.brandIds, brandIds),
-        inArray(quotePitches.status, BLOCK_STATUSES)
-      );
+  // Atomic per-brand exclusion: a brand cannot answer the same Featured
+  // question twice, so once an opportunity is pitched (blocking status) for
+  // the brand-set it is excluded from every future /next for that brand-set,
+  // regardless of campaign. Block scope is brand-only — never campaign — to
+  // stay in lockstep with /reply's brand-scoped idempotency. A campaign-scoped
+  // block deadlocks: /next would re-serve an opp /reply then refuses as
+  // already_submitted.
+  const pitchScope = and(
+    eq(quotePitches.brandIds, brandIds),
+    inArray(quotePitches.status, BLOCK_STATUSES)
+  );
 
   const blockedRows = await db
     .selectDistinct({ id: quotePitches.quoteOpportunityId })
@@ -820,8 +820,8 @@ async function selectBestNonPitched(args: {
  *
  *   - Reads from `quote_priorities` (Gold scored projection) joined to
  *     `quote_opportunities` (silver canonical). Annotates each row with
- *     the latest `pitchStatus` seen for the brand-set (campaign-scoped
- *     when campaignId provided, else any campaign).
+ *     the latest `pitchStatus` seen for the brand-set (brand-atomic — any
+ *     campaign's pitch counts).
  *   - NO scoring, NO Featured ingest. Opportunities not yet scored for
  *     this brand-set tuple are simply absent from the response — the
  *     `/next` write-path is what fills them.
@@ -928,16 +928,13 @@ export async function selectRankedPage(args: {
     silversByOppId.set(s.quoteOpportunityId, list);
   }
 
-  const pitchScope = campaignId
-    ? and(
-        eq(quotePitches.brandIds, brandIds),
-        eq(quotePitches.campaignId, campaignId),
-        inArray(quotePitches.quoteOpportunityId, opportunityIds)
-      )
-    : and(
-        eq(quotePitches.brandIds, brandIds),
-        inArray(quotePitches.quoteOpportunityId, opportunityIds)
-      );
+  // pitchStatus annotation is brand-atomic — any campaign's blocking pitch
+  // for the brand-set counts. Mirrors the atomic exclusion in /next + stats
+  // (a brand cannot pitch the same Featured question twice).
+  const pitchScope = and(
+    eq(quotePitches.brandIds, brandIds),
+    inArray(quotePitches.quoteOpportunityId, opportunityIds)
+  );
 
   const pitches = await db
     .select({
@@ -1006,18 +1003,17 @@ export async function selectRankedPage(args: {
  *   - scoredCount: count of quote_priorities rows for the brand-set
  *     tuple (any score).
  *   - eligibleCount: scored, deadline non-expired, submittable (premium),
- *     NOT in quote_pitches blocking states for the brand-set
- *     (campaign-scoped if campaignId provided). NO relevance floor —
- *     the dashboard filters by score client-side.
+ *     NOT in quote_pitches blocking states for the brand-set (atomic per-brand
+ *     — any campaign's pitch blocks). NO relevance floor — the dashboard
+ *     filters by score client-side.
  *   - pitchedBlocking: count of quote_pitches blocking rows for the
- *     brand-set (campaign-scoped if campaignId provided).
+ *     brand-set (atomic per-brand — any campaign).
  *   - expiredCount: scored opportunities with canonical_deadline < now().
  *   - bestEligibleScore: highest score among eligible rows, or null.
  */
 export async function selectOpportunitiesStats(args: {
   orgId: string;
   brandIds: string[];
-  campaignId?: string;
 }): Promise<{
   silverPoolSize: number;
   scoredCount: number;
@@ -1026,7 +1022,7 @@ export async function selectOpportunitiesStats(args: {
   expiredCount: number;
   bestEligibleScore: number | null;
 }> {
-  const { orgId, brandIds, campaignId } = args;
+  const { orgId, brandIds } = args;
 
   const [silverRow] = await db
     .select({ n: drizzleSql<number>`count(*)::int` })
@@ -1058,16 +1054,11 @@ export async function selectOpportunitiesStats(args: {
       )
     );
 
-  const pitchScope = campaignId
-    ? and(
-        eq(quotePitches.brandIds, brandIds),
-        eq(quotePitches.campaignId, campaignId),
-        inArray(quotePitches.status, BLOCK_STATUSES)
-      )
-    : and(
-        eq(quotePitches.brandIds, brandIds),
-        inArray(quotePitches.status, BLOCK_STATUSES)
-      );
+  // Brand-atomic block scope (any campaign) — consistent with /next.
+  const pitchScope = and(
+    eq(quotePitches.brandIds, brandIds),
+    inArray(quotePitches.status, BLOCK_STATUSES)
+  );
 
   const [pitchedRow] = await db
     .select({ n: drizzleSql<number>`count(*)::int` })
@@ -1208,7 +1199,6 @@ export async function pickNextOpportunity(args: {
   const best = await selectBestNonPitched({
     orgId,
     brandIds,
-    campaignId,
     scoreThreshold,
   });
   console.log(

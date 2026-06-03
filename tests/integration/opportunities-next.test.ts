@@ -14,6 +14,7 @@ import {
   TEST_BRAND,
   TEST_BRAND_B,
   TEST_CAMPAIGN_A,
+  TEST_CAMPAIGN_B,
   TEST_ORG_A,
 } from "../helpers/test-app.js";
 import { cleanTestData, closeDb } from "../helpers/test-db.js";
@@ -394,6 +395,108 @@ describe("POST /orgs/opportunities/next (premium questions)", () => {
       quoteRequestId: silverTop.id,
       quoteOpportunityId: firstGoldId,
       campaignId: TEST_CAMPAIGN_A,
+      brandIds: [TEST_BRAND],
+      status: "submitted",
+      deliveryMethod: "featured_api",
+      orgId: TEST_ORG_A,
+    });
+
+    const second = await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(second.body.found).toBe(true);
+    expect(second.body.opportunity.featuredQuestionId).toBe(12);
+  });
+
+  it("skips an opportunity pitched under a DIFFERENT campaign (atomic per-brand exclusion)", async () => {
+    // A brand cannot answer the same Featured question twice — once pitched
+    // for the brand-set under ANY campaign, the opportunity is excluded from
+    // every future /next for that brand-set, regardless of the serving
+    // campaign. Pitch fqid 11 under campaign B; serving under campaign A
+    // (AUTH_HEADERS) must skip it and return fqid 12.
+    state.premiumQuestions = [
+      makePremiumQuestion({
+        featuredQuestionId: 11,
+        question: "high signal top",
+        mediaOutlet: "Outlet 1",
+      }),
+      makePremiumQuestion({
+        featuredQuestionId: 12,
+        question: "mid signal second",
+        mediaOutlet: "Outlet 2",
+      }),
+    ];
+
+    const a = app();
+    const first = await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(first.body.opportunity.featuredQuestionId).toBe(11);
+    const firstGoldId = first.body.opportunity.opportunityId;
+
+    const silverTop = (
+      await db
+        .select()
+        .from(providerQuoteRequests)
+        .where(eq(providerQuoteRequests.externalId, "featured-premium-11"))
+    )[0];
+    await db.insert(quotePitches).values({
+      quoteRequestId: silverTop.id,
+      quoteOpportunityId: firstGoldId,
+      campaignId: TEST_CAMPAIGN_B,
+      brandIds: [TEST_BRAND],
+      status: "submitted",
+      deliveryMethod: "featured_api",
+      orgId: TEST_ORG_A,
+    });
+
+    const second = await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(second.body.found).toBe(true);
+    expect(second.body.opportunity.featuredQuestionId).toBe(12);
+  });
+
+  it("skips an opportunity pitched with NULL campaign (prod deadlock repro)", async () => {
+    // Exact prod case: legacy pitches landed with campaign_id=NULL (the
+    // /reply campaignId came from the request body, which the workflow
+    // omitted). A campaign-scoped block would re-serve them forever and
+    // /reply would refuse each as already_submitted — a deadlock. Atomic
+    // per-brand exclusion must skip the NULL-campaign pitch.
+    state.premiumQuestions = [
+      makePremiumQuestion({
+        featuredQuestionId: 11,
+        question: "high signal top",
+        mediaOutlet: "Outlet 1",
+      }),
+      makePremiumQuestion({
+        featuredQuestionId: 12,
+        question: "mid signal second",
+        mediaOutlet: "Outlet 2",
+      }),
+    ];
+
+    const a = app();
+    const first = await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(first.body.opportunity.featuredQuestionId).toBe(11);
+    const firstGoldId = first.body.opportunity.opportunityId;
+
+    const silverTop = (
+      await db
+        .select()
+        .from(providerQuoteRequests)
+        .where(eq(providerQuoteRequests.externalId, "featured-premium-11"))
+    )[0];
+    await db.insert(quotePitches).values({
+      quoteRequestId: silverTop.id,
+      quoteOpportunityId: firstGoldId,
+      campaignId: null,
       brandIds: [TEST_BRAND],
       status: "submitted",
       deliveryMethod: "featured_api",
