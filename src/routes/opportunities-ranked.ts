@@ -13,7 +13,7 @@ import {
 // query string. limit/offset arrive as strings → coerce.
 const OpportunitiesGetQuerySchema = z.object({
   campaignId: z.string().uuid().optional(),
-  limit: z.coerce.number().int().min(1).max(50).optional(),
+  limit: z.coerce.number().int().min(1).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });
 
