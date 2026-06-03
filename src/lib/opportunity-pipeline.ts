@@ -825,8 +825,11 @@ async function selectBestNonPitched(args: {
  *   - NO scoring, NO Featured ingest. Opportunities not yet scored for
  *     this brand-set tuple are simply absent from the response — the
  *     `/next` write-path is what fills them.
- *   - Filters expired `canonical_deadline`. Includes pitched
- *     opportunities (caller decides what to do with `pitchStatus`).
+ *   - NO relevance gate. Every scored premium opportunity is returned
+ *     with its `score`; the dashboard filters by relevance client-side.
+ *   - Filters expired `canonical_deadline` + restricts to submittable
+ *     (premium) clusters. Includes pitched opportunities (caller decides
+ *     what to do with `pitchStatus`).
  *
  * Returns `{ rows, total }` where total is the unpaginated count.
  */
@@ -836,13 +839,11 @@ export async function selectRankedPage(args: {
   campaignId?: string;
   limit: number;
   offset: number;
-  scoreThreshold: number;
 }): Promise<{ rows: RankedOpportunity[]; total: number }> {
-  const { orgId, brandIds, campaignId, limit, offset, scoreThreshold } = args;
+  const { orgId, brandIds, campaignId, limit, offset } = args;
 
   const filter = and(
     eq(quotePriorities.brandIds, brandIds),
-    drizzleSql`${quotePriorities.score} >= ${scoreThreshold.toFixed(2)}::numeric`,
     or(
       drizzleSql`${quoteOpportunities.canonicalDeadline} IS NULL`,
       drizzleSql`${quoteOpportunities.canonicalDeadline} > now()`
@@ -1003,10 +1004,11 @@ export async function selectRankedPage(args: {
  *   - silverPoolSize: count of provider_quote_requests for the org
  *     (own or SHARED_EMAIL_ORG_ID), regardless of scoring state.
  *   - scoredCount: count of quote_priorities rows for the brand-set
- *     tuple (some may be below threshold).
- *   - eligibleCount: scored above SCORE_THRESHOLD, deadline non-expired,
+ *     tuple (any score).
+ *   - eligibleCount: scored, deadline non-expired, submittable (premium),
  *     NOT in quote_pitches blocking states for the brand-set
- *     (campaign-scoped if campaignId provided).
+ *     (campaign-scoped if campaignId provided). NO relevance floor —
+ *     the dashboard filters by score client-side.
  *   - pitchedBlocking: count of quote_pitches blocking rows for the
  *     brand-set (campaign-scoped if campaignId provided).
  *   - expiredCount: scored opportunities with canonical_deadline < now().
@@ -1016,7 +1018,6 @@ export async function selectOpportunitiesStats(args: {
   orgId: string;
   brandIds: string[];
   campaignId?: string;
-  scoreThreshold: number;
 }): Promise<{
   silverPoolSize: number;
   scoredCount: number;
@@ -1025,7 +1026,7 @@ export async function selectOpportunitiesStats(args: {
   expiredCount: number;
   bestEligibleScore: number | null;
 }> {
-  const { orgId, brandIds, campaignId, scoreThreshold } = args;
+  const { orgId, brandIds, campaignId } = args;
 
   const [silverRow] = await db
     .select({ n: drizzleSql<number>`count(*)::int` })
@@ -1083,7 +1084,6 @@ export async function selectOpportunitiesStats(args: {
 
   const eligibleFilter = and(
     eq(quotePriorities.brandIds, brandIds),
-    drizzleSql`${quotePriorities.score} >= ${scoreThreshold.toFixed(2)}::numeric`,
     or(
       drizzleSql`${quoteOpportunities.canonicalDeadline} IS NULL`,
       drizzleSql`${quoteOpportunities.canonicalDeadline} > now()`

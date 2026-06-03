@@ -117,7 +117,7 @@ describe("GET /orgs/opportunities (canonical read)", () => {
     expect(res.status).toBe(400);
   });
 
-  it("sorts by score desc, filters below threshold, honors ?limit=&offset=", async () => {
+  it("returns ALL scored premium opps regardless of relevance, sorts by score desc, honors ?limit=&offset=", async () => {
     const high = await seedScoredOpportunity({
       fingerprint: "g-high",
       text: "high signal AI ethics",
@@ -136,7 +136,8 @@ describe("GET /orgs/opportunities (canonical read)", () => {
       brandIds: [TEST_BRAND],
       score: 70,
     });
-    await seedScoredOpportunity({
+    // Low relevance — NO score floor on the read surface; front-end filters.
+    const low = await seedScoredOpportunity({
       fingerprint: "g-low",
       text: "low",
       outlet: "BuzzFeed",
@@ -153,15 +154,18 @@ describe("GET /orgs/opportunities (canonical read)", () => {
     expect(all.body.opportunities.map((o: { opportunityId: string }) => o.opportunityId)).toEqual([
       high,
       mid,
+      low,
     ]);
-    expect(all.body.total).toBe(2);
+    expect(all.body.total).toBe(3);
+    // The low-relevance row carries its score so the dashboard can filter.
+    expect(all.body.opportunities[2].score).toBe(20);
 
     const paged = await request(app())
       .get("/orgs/opportunities?limit=1&offset=1")
       .set(AUTH_HEADERS);
     expect(paged.body.opportunities).toHaveLength(1);
     expect(paged.body.opportunities[0].opportunityId).toBe(mid);
-    expect(paged.body.total).toBe(2);
+    expect(paged.body.total).toBe(3);
   });
 
   it("scopes pitchStatus to the ?campaignId= query when provided", async () => {
@@ -239,7 +243,7 @@ describe("GET /orgs/opportunities/stats", () => {
     expect(res.body.error).toMatch(/x-brand-id/);
   });
 
-  it("counts silver pool + scored + eligible + best score", async () => {
+  it("counts silver pool + scored + eligible (no score floor) + best score", async () => {
     const high = await seedScoredOpportunity({
       fingerprint: "fp-high",
       text: "high signal",
@@ -248,7 +252,7 @@ describe("GET /orgs/opportunities/stats", () => {
       brandIds: [TEST_BRAND],
       score: 95,
     });
-    // Below threshold — scored but not eligible.
+    // Low relevance — still eligible (no score floor); front-end filters.
     await seedScoredOpportunity({
       fingerprint: "fp-low",
       text: "low signal",
@@ -273,12 +277,12 @@ describe("GET /orgs/opportunities/stats", () => {
     expect(res.status).toBe(200);
     expect(res.body.silverPoolSize).toBe(3);
     expect(res.body.scoredCount).toBe(2); // brand-set filtered
-    expect(res.body.eligibleCount).toBe(1);
+    expect(res.body.eligibleCount).toBe(2); // both — no relevance gate
     expect(res.body.pitchedBlocking).toBe(0);
     expect(res.body.expiredCount).toBe(0);
     expect(res.body.bestEligibleScore).toBe(95);
 
-    // Pitch the high one — eligible drops.
+    // Pitch the high one — it leaves the eligible set; the low one remains.
     const silverHigh = (
       await db
         .select()
@@ -297,9 +301,9 @@ describe("GET /orgs/opportunities/stats", () => {
     const res2 = await request(app())
       .get("/orgs/opportunities/stats")
       .set(AUTH_HEADERS);
-    expect(res2.body.eligibleCount).toBe(0);
+    expect(res2.body.eligibleCount).toBe(1); // low (20) still actionable
     expect(res2.body.pitchedBlocking).toBe(1);
-    expect(res2.body.bestEligibleScore).toBeNull();
+    expect(res2.body.bestEligibleScore).toBe(20);
   });
 
   it("excludes discovery rows (null featured_question_id) from eligibleCount", async () => {
