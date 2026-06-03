@@ -110,11 +110,11 @@ describe("GET /orgs/opportunities (canonical read)", () => {
     expect(res.body.error).toMatch(/x-brand-id/);
   });
 
-  it("rejects limit > 50 with 400", async () => {
+  it("accepts limit > 50 (no upper cap)", async () => {
     const res = await request(app())
-      .get("/orgs/opportunities?limit=100")
+      .get("/orgs/opportunities?limit=200")
       .set(AUTH_HEADERS);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
   });
 
   it("returns ALL scored premium opps regardless of relevance, sorts by score desc, honors ?limit=&offset=", async () => {
