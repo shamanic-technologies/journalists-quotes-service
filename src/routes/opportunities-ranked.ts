@@ -9,8 +9,6 @@ import {
   parseBrandIdsHeader,
 } from "../lib/brand-ids.js";
 
-const SCORE_THRESHOLD = Number(process.env.SCORE_THRESHOLD ?? "30");
-
 // GET variant of the ranked read: same filter + shape, params from the
 // query string. limit/offset arrive as strings → coerce.
 const OpportunitiesGetQuerySchema = z.object({
@@ -94,7 +92,6 @@ export function createOpportunitiesRankedRouter(
       campaignId,
       limit,
       offset,
-      scoreThreshold: SCORE_THRESHOLD,
     });
 
     res.json(buildRankedResponse(rows, total, brandIds));
@@ -124,7 +121,6 @@ export function createOpportunitiesRankedRouter(
       orgId,
       brandIds,
       campaignId,
-      scoreThreshold: SCORE_THRESHOLD,
     });
 
     console.log(
