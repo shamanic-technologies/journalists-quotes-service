@@ -168,7 +168,7 @@ describe("GET /orgs/opportunities (canonical read)", () => {
     expect(paged.body.total).toBe(3);
   });
 
-  it("scopes pitchStatus to the ?campaignId= query when provided", async () => {
+  it("annotates pitchStatus brand-atomically regardless of ?campaignId= (a brand cannot pitch the same opp twice)", async () => {
     const opp = await seedScoredOpportunity({
       fingerprint: "g-camp",
       text: "high signal camp",
@@ -193,6 +193,9 @@ describe("GET /orgs/opportunities (canonical read)", () => {
       orgId: TEST_ORG_A,
     });
 
+    // Pitched under campaign A surfaces as pitched under BOTH the same-campaign
+    // query and a different-campaign query — the annotation is per-brand, never
+    // per-campaign (matches the atomic exclusion in /next + stats).
     const sameCampaign = await request(app())
       .get("/orgs/opportunities?campaignId=" + TEST_CAMPAIGN_A)
       .set(AUTH_HEADERS);
@@ -201,7 +204,7 @@ describe("GET /orgs/opportunities (canonical read)", () => {
     const otherCampaign = await request(app())
       .get("/orgs/opportunities?campaignId=" + TEST_CAMPAIGN_B)
       .set(AUTH_HEADERS);
-    expect(otherCampaign.body.opportunities[0].pitchStatus).toBeNull();
+    expect(otherCampaign.body.opportunities[0].pitchStatus).toBe("submitted");
   });
 });
 
@@ -352,7 +355,7 @@ describe("GET /orgs/opportunities/stats", () => {
     expect(res.body.scoredCount).toBe(1);
   });
 
-  it("scopes pitchedBlocking to the campaign when campaign_id is provided", async () => {
+  it("counts pitchedBlocking brand-atomically regardless of ?campaign_id= (any campaign's pitch blocks)", async () => {
     const opp = await seedScoredOpportunity({
       fingerprint: "fp-camp",
       text: "high signal camp",
@@ -377,6 +380,10 @@ describe("GET /orgs/opportunities/stats", () => {
       orgId: TEST_ORG_A,
     });
 
+    // The pitch (under campaign A) blocks the opportunity for the brand-set
+    // under EVERY campaign query — pitchedBlocking=1 / eligibleCount=0 for both
+    // the same campaign and a different one. A brand cannot answer the same
+    // Featured question twice, so campaign is never the block axis.
     const sameCampaign = await request(app())
       .get("/orgs/opportunities/stats?campaign_id=" + TEST_CAMPAIGN_A)
       .set(AUTH_HEADERS);
@@ -386,7 +393,7 @@ describe("GET /orgs/opportunities/stats", () => {
     const otherCampaign = await request(app())
       .get("/orgs/opportunities/stats?campaign_id=" + TEST_CAMPAIGN_B)
       .set(AUTH_HEADERS);
-    expect(otherCampaign.body.pitchedBlocking).toBe(0);
-    expect(otherCampaign.body.eligibleCount).toBe(1);
+    expect(otherCampaign.body.pitchedBlocking).toBe(1);
+    expect(otherCampaign.body.eligibleCount).toBe(0);
   });
 });

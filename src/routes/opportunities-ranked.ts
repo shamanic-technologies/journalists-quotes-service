@@ -120,7 +120,6 @@ export function createOpportunitiesRankedRouter(
     const stats = await selectOpportunitiesStats({
       orgId,
       brandIds,
-      campaignId,
     });
 
     console.log(
