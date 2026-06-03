@@ -418,7 +418,7 @@ registry.registerPath({
   method: "get",
   path: "/orgs/opportunities",
   summary:
-    "Paginated read-only list of scored Gold-cluster opportunities for the brand-set above SCORE_THRESHOLD, sorted by score desc. Pure-read (no scoring, no ingest) — the canonical read surface, polled by the HITL dashboard. Query: `?campaignId=&limit=&offset=` (campaignId optional; pitchStatus annotated for that campaign when set, else brand-set wide). Brand identity via x-brand-id header (CSV when plural).",
+    "Paginated read-only list of ALL scored Gold-cluster opportunities for the brand-set (NO relevance floor — every scored premium opp is returned with its `score` so the dashboard filters client-side), sorted by score desc. Pure-read (no scoring, no ingest) — the canonical read surface, polled by the HITL dashboard. Filters expired deadlines + restricts to submittable (premium) clusters. Query: `?campaignId=&limit=&offset=` (campaignId optional; pitchStatus annotated for that campaign when set, else brand-set wide). Brand identity via x-brand-id header (CSV when plural).",
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
     headers: orgHeaders,
@@ -430,7 +430,7 @@ registry.registerPath({
   },
   responses: {
     200: {
-      description: "Ranked opportunities above SCORE_THRESHOLD, sorted by score desc",
+      description: "All scored opportunities for the brand-set (no relevance floor), sorted by score desc",
       content: {
         "application/json": { schema: OpportunityRankedResponseSchema },
       },
