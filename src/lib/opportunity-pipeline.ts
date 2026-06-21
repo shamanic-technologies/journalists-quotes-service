@@ -359,13 +359,19 @@ export async function ingestPremiumQuestionsToSilver(args: {
   orgId: string;
   userId?: string;
   runId?: string;
+  audienceId?: string;
   eqrsClient: EqrsClient;
 }): Promise<void> {
-  const { orgId, userId, runId, eqrsClient } = args;
+  const { orgId, userId, runId, audienceId, eqrsClient } = args;
 
   let response;
   try {
-    response = await eqrsClient.fetchPremiumQuestions({ orgId, userId, runId });
+    response = await eqrsClient.fetchPremiumQuestions({
+      orgId,
+      userId,
+      runId,
+      audienceId,
+    });
   } catch (err) {
     throw new EqrsServiceError((err as Error).message);
   }
@@ -621,8 +627,10 @@ async function scoreUnscored(args: {
   campaignId?: string;
   userId?: string;
   runId?: string;
+  audienceId?: string;
 }): Promise<void> {
-  const { candidates, orgId, brandIds, campaignId, userId, runId } = args;
+  const { candidates, orgId, brandIds, campaignId, userId, runId, audienceId } =
+    args;
   if (candidates.length === 0) return;
 
   // brand-service /orgs/brands/extract-fields is an org-route: it hard-requires
@@ -640,7 +648,13 @@ async function scoreUnscored(args: {
     );
   }
 
-  const brandContext = await extractBrandContext(brandIds, orgId, userId, runId);
+  const brandContext = await extractBrandContext(
+    brandIds,
+    orgId,
+    userId,
+    runId,
+    audienceId
+  );
 
   const response = await judgeRelevance({
     documents: candidates.map((c) => ({
@@ -651,6 +665,7 @@ async function scoreUnscored(args: {
     orgId,
     userId,
     runId,
+    audienceId,
   });
 
   if (response.results.length === 0) return;
@@ -1138,6 +1153,7 @@ export async function pickNextOpportunity(args: {
   campaignId?: string;
   userId?: string;
   runId?: string;
+  audienceId?: string;
   scoreThreshold: number;
   eqrsClient: EqrsClient;
 }): Promise<RankedOpportunity | null> {
@@ -1147,6 +1163,7 @@ export async function pickNextOpportunity(args: {
     campaignId,
     userId,
     runId,
+    audienceId,
     scoreThreshold,
     eqrsClient,
   } = args;
@@ -1173,6 +1190,7 @@ export async function pickNextOpportunity(args: {
       orgId,
       userId,
       runId,
+      audienceId,
       eqrsClient,
     });
     unscored = await selectUnscoredBatch(orgId, brandIds);
@@ -1190,6 +1208,7 @@ export async function pickNextOpportunity(args: {
       campaignId,
       userId,
       runId,
+      audienceId,
     });
     console.log(
       `[journalists-quotes-service] /next stage=scored orgId=${orgId} brandIds=${brandIdsLabel} scoredCount=${unscored.length} scoreMs=${Date.now() - scoreStart}`
@@ -1236,9 +1255,11 @@ export async function scoreNextBatch(args: {
   campaignId: string;
   userId?: string;
   runId?: string;
+  audienceId?: string;
   eqrsClient: EqrsClient;
 }): Promise<{ scored: number; exhausted: boolean }> {
-  const { orgId, brandIds, campaignId, userId, runId, eqrsClient } = args;
+  const { orgId, brandIds, campaignId, userId, runId, audienceId, eqrsClient } =
+    args;
 
   const startedAt = Date.now();
   const brandIdsLabel = brandIds.join(",");
@@ -1251,7 +1272,13 @@ export async function scoreNextBatch(args: {
     // Silver pool exhausted for this brand-set tuple. Pull Featured
     // PREMIUM questions from EQRS (idempotent upsert; no cursor) and
     // re-pick. EqrsServiceError propagates to the route → 502.
-    await ingestPremiumQuestionsToSilver({ orgId, userId, runId, eqrsClient });
+    await ingestPremiumQuestionsToSilver({
+      orgId,
+      userId,
+      runId,
+      audienceId,
+      eqrsClient,
+    });
     unscored = await selectUnscoredBatch(orgId, brandIds, "deadline");
   }
 
@@ -1269,6 +1296,7 @@ export async function scoreNextBatch(args: {
     campaignId,
     userId,
     runId,
+    audienceId,
   });
 
   console.log(

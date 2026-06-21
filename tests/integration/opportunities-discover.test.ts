@@ -114,9 +114,11 @@ describe("POST /orgs/opportunities/discover (write-only batch scorer)", () => {
       })
     );
 
+    const TEST_AUDIENCE = "00000000-0000-0000-0000-0000000000ad";
     const res = await request(app())
       .post("/orgs/opportunities/discover")
       .set(AUTH_HEADERS)
+      .set("x-audience-id", TEST_AUDIENCE)
       .send({});
 
     expect(res.status).toBe(200);
@@ -134,11 +136,17 @@ describe("POST /orgs/opportunities/discover (write-only batch scorer)", () => {
     expect(vi.mocked(judgeRelevance)).toHaveBeenCalledTimes(1);
     // Regression: scoreUnscored must forward the identity trio to brand-service
     // extract-fields (it 400s without x-user-id / x-run-id).
+    // AND x-audience-id (inbound) must reach the egress so per-audience cost
+    // attribution works downstream (extract-fields cost + judge LLM cost).
     expect(vi.mocked(extractBrandContext)).toHaveBeenCalledWith(
       [TEST_BRAND],
       TEST_ORG_A,
       TEST_USER,
-      TEST_PARENT_RUN
+      TEST_PARENT_RUN,
+      TEST_AUDIENCE
+    );
+    expect(vi.mocked(judgeRelevance)).toHaveBeenCalledWith(
+      expect.objectContaining({ audienceId: TEST_AUDIENCE })
     );
   });
 

@@ -77,8 +77,9 @@ export async function judgeRelevance(args: {
   orgId: string;
   userId?: string;
   runId?: string;
+  audienceId?: string;
 }): Promise<JudgeResponse> {
-  const { documents, brandContext, orgId, userId, runId } = args;
+  const { documents, brandContext, orgId, userId, runId, audienceId } = args;
 
   const chatServiceUrl = process.env.CHAT_SERVICE_URL;
   const chatServiceApiKey = process.env.CHAT_SERVICE_API_KEY;
@@ -93,6 +94,9 @@ export async function judgeRelevance(args: {
   };
   if (userId) headers["x-user-id"] = userId;
   if (runId) headers["x-run-id"] = runId;
+  // Forward the campaign audience so chat-service tags the judge LLM
+  // cost (the biggest spend on the press-pitch path) to this audience.
+  if (audienceId) headers["x-audience-id"] = audienceId;
 
   const message = [
     "Score these opportunities. Return a `results` array with one entry per id.",

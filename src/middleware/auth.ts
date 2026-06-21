@@ -13,6 +13,7 @@ declare global {
       brandId?: string;
       featureSlug?: string;
       workflowSlug?: string;
+      audienceId?: string;
     }
   }
 }
@@ -38,6 +39,11 @@ export function apiKeyAuth(
     (req.headers["x-feature-slug"] as string | undefined) ?? undefined;
   req.workflowSlug =
     (req.headers["x-workflow-slug"] as string | undefined) ?? undefined;
+  // x-audience-id: campaign-scoped audience attribution. Optional —
+  // absent outside the campaign flux. Forwarded to siblings + runs-service
+  // so per-audience cost attribution works (never throws when absent).
+  req.audienceId =
+    (req.headers["x-audience-id"] as string | undefined) ?? undefined;
 
   next();
 }
@@ -99,7 +105,8 @@ export async function withRunTracking(
         taskName,
       },
       req.orgId,
-      req.userId
+      req.userId,
+      req.audienceId
     );
     req.runId = run.id;
   } catch (err) {

@@ -83,6 +83,7 @@ export interface EqrsClient {
     orgId: string;
     userId?: string;
     runId?: string;
+    audienceId?: string;
     since?: string;
     limit?: number;
   }): Promise<EqrsOpportunitiesResponse>;
@@ -91,12 +92,14 @@ export interface EqrsClient {
     orgId: string;
     userId?: string;
     runId?: string;
+    audienceId?: string;
   }): Promise<EqrsPremiumQuestionsResponse>;
 
   submitAnswer(args: {
     orgId: string;
     userId?: string;
     runId?: string;
+    audienceId?: string;
     brandId: string;
     featuredQuestionId: number;
     answer: string;
@@ -137,6 +140,7 @@ export function createEqrsClient(
       };
       if (args.userId) headers["x-user-id"] = args.userId;
       if (args.runId) headers["x-run-id"] = args.runId;
+      if (args.audienceId) headers["x-audience-id"] = args.audienceId;
 
       const response = await fetchImpl(url, { method: "GET", headers });
       if (!response.ok) {
@@ -158,6 +162,7 @@ export function createEqrsClient(
       };
       if (args.userId) headers["x-user-id"] = args.userId;
       if (args.runId) headers["x-run-id"] = args.runId;
+      if (args.audienceId) headers["x-audience-id"] = args.audienceId;
 
       const response = await fetchImpl(
         `${baseUrl}/orgs/featured/premium-questions`,
@@ -183,6 +188,7 @@ export function createEqrsClient(
       };
       if (args.userId) headers["x-user-id"] = args.userId;
       if (args.runId) headers["x-run-id"] = args.runId;
+      if (args.audienceId) headers["x-audience-id"] = args.audienceId;
 
       const response = await fetchImpl(
         `${baseUrl}/orgs/featured/answers`,

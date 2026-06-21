@@ -39,6 +39,7 @@ interface ServiceContext {
   brandId?: string;
   workflowSlug?: string;
   featureSlug?: string;
+  audienceId?: string;
 }
 
 function getConfig(): { url: string; apiKey: string } {
@@ -61,6 +62,7 @@ function buildHeaders(ctx: ServiceContext, apiKey: string): HeadersInit {
   if (ctx.brandId) headers["x-brand-id"] = ctx.brandId;
   if (ctx.workflowSlug) headers["x-workflow-slug"] = ctx.workflowSlug;
   if (ctx.featureSlug) headers["x-feature-slug"] = ctx.featureSlug;
+  if (ctx.audienceId) headers["x-audience-id"] = ctx.audienceId;
   return headers;
 }
 

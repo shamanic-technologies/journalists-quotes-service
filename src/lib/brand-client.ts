@@ -88,7 +88,8 @@ export async function extractBrandContext(
   brandIds: string[],
   orgId: string,
   userId: string,
-  runId: string
+  runId: string,
+  audienceId?: string
 ): Promise<string> {
   if (brandIds.length === 0) {
     throw new Error("extractBrandContext: brandIds must be non-empty");
@@ -100,16 +101,20 @@ export async function extractBrandContext(
     throw new Error("extractBrandContext: runId must be non-empty");
   }
   const { url, apiKey } = getConfig();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "x-api-key": apiKey,
+    "x-org-id": orgId,
+    "x-user-id": userId,
+    "x-run-id": runId,
+    "x-brand-id": brandIds.join(","),
+  };
+  // Forward the campaign audience so brand-service tags the
+  // field-extraction cost to this audience.
+  if (audienceId) headers["x-audience-id"] = audienceId;
   const response = await fetch(`${url}/orgs/brands/extract-fields`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "x-org-id": orgId,
-      "x-user-id": userId,
-      "x-run-id": runId,
-      "x-brand-id": brandIds.join(","),
-    },
+    headers,
     body: JSON.stringify({
       fields: JUDGE_BRAND_FIELDS.map((f) => ({
         key: f.key,
