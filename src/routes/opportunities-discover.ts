@@ -62,7 +62,7 @@ export function createOpportunitiesDiscoverRouter(
       }
       throw err;
     }
-    const { userId, campaignId } = identity;
+    const { userId, campaignId, audienceId } = identity;
     const orgId = req.orgId!;
     const runId = req.runId;
 
@@ -78,6 +78,7 @@ export function createOpportunitiesDiscoverRouter(
         campaignId,
         userId,
         runId,
+        audienceId,
         eqrsClient,
       });
     } catch (err) {

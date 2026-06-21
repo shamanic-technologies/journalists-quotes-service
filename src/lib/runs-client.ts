@@ -16,7 +16,8 @@ export interface CreateRunResponse {
 export async function createChildRun(
   request: { parentRunId?: string; serviceName: string; taskName: string },
   orgId?: string,
-  userId?: string
+  userId?: string,
+  audienceId?: string
 ): Promise<CreateRunResponse> {
   const { url, apiKey } = getRunsConfig();
 
@@ -27,6 +28,9 @@ export async function createChildRun(
   if (orgId) headers["x-org-id"] = orgId;
   if (userId) headers["x-user-id"] = userId;
   if (request.parentRunId) headers["x-run-id"] = request.parentRunId;
+  // Tag the run row with the campaign audience so runs-service can
+  // attribute this run's cost to the right audience (runs.audience_id).
+  if (audienceId) headers["x-audience-id"] = audienceId;
 
   const response = await fetch(`${url}/v1/runs`, {
     method: "POST",
@@ -90,6 +94,7 @@ export interface AddCostsIdentity {
   campaignId?: string;
   featureSlug?: string;
   workflowSlug?: string;
+  audienceId?: string;
 }
 
 export async function addCosts(
@@ -110,6 +115,7 @@ export async function addCosts(
   if (identity.campaignId) headers["x-campaign-id"] = identity.campaignId;
   if (identity.featureSlug) headers["x-feature-slug"] = identity.featureSlug;
   if (identity.workflowSlug) headers["x-workflow-slug"] = identity.workflowSlug;
+  if (identity.audienceId) headers["x-audience-id"] = identity.audienceId;
 
   const response = await fetch(`${url}/v1/runs/${runId}/costs`, {
     method: "POST",

@@ -4,6 +4,10 @@ export interface ResolvedOpportunityIdentity {
   userId: string;
   parentRunId: string;
   campaignId: string;
+  // Optional campaign audience attribution (x-audience-id). Absent
+  // outside the campaign flux — NOT part of the mandatory trio, never
+  // throws. Forwarded downstream so per-audience cost attribution works.
+  audienceId?: string;
 }
 
 export class IdentityHeaderError extends Error {
@@ -43,5 +47,6 @@ export function requireOpportunityIdentity(
     userId: req.userId,
     parentRunId: req.parentRunId,
     campaignId: req.campaignId,
+    audienceId: req.audienceId,
   };
 }

@@ -90,6 +90,7 @@ export function createOpportunityReplyRouter(
     const orgId = req.orgId!;
     const userId = req.userId;
     const runId = req.runId;
+    const audienceId = req.audienceId;
     const parentRunId = req.parentRunId ?? null;
 
     const goldRows = await db
@@ -180,6 +181,7 @@ export function createOpportunityReplyRouter(
         orgId,
         userId,
         runId,
+        audienceId,
         parentRunId,
         eqrsClient,
       });
@@ -198,6 +200,7 @@ export function createOpportunityReplyRouter(
       orgId,
       userId,
       runId,
+      audienceId,
       parentRunId,
     });
   });
@@ -226,6 +229,7 @@ async function handleFeaturedReply(args: {
   orgId: string;
   userId?: string;
   runId?: string;
+  audienceId?: string;
   parentRunId: string | null;
   eqrsClient: EqrsClient;
 }) {
@@ -239,6 +243,7 @@ async function handleFeaturedReply(args: {
     orgId,
     userId,
     runId,
+    audienceId,
     parentRunId,
     eqrsClient,
   } = args;
@@ -272,6 +277,7 @@ async function handleFeaturedReply(args: {
       orgId,
       userId,
       runId,
+      audienceId,
       brandId: leadBrandId,
       featuredQuestionId: representative.featuredQuestionId,
       answer: pitchContent,
@@ -386,6 +392,7 @@ async function handleEmailReply(args: {
   orgId: string;
   userId?: string;
   runId?: string;
+  audienceId?: string;
   parentRunId: string | null;
 }) {
   const {
@@ -400,6 +407,7 @@ async function handleEmailReply(args: {
     orgId,
     userId,
     runId,
+    audienceId,
     parentRunId,
   } = args;
 
@@ -433,6 +441,7 @@ async function handleEmailReply(args: {
         orgId,
         userId,
         runId,
+        audienceId,
         campaignId,
         brandId: leadBrandId,
         workflowSlug: req.workflowSlug,

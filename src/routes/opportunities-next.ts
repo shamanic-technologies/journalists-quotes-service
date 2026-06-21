@@ -54,7 +54,7 @@ export function createOpportunitiesNextRouter(
       }
       throw err;
     }
-    const { userId, campaignId } = identity;
+    const { userId, campaignId, audienceId } = identity;
     const orgId = req.orgId!;
     const runId = req.runId;
 
@@ -70,6 +70,7 @@ export function createOpportunitiesNextRouter(
         campaignId,
         userId,
         runId,
+        audienceId,
         scoreThreshold: SCORE_THRESHOLD,
         eqrsClient,
       });
