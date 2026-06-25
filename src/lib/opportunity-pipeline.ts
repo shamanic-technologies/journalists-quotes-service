@@ -628,9 +628,18 @@ async function scoreUnscored(args: {
   userId?: string;
   runId?: string;
   audienceId?: string;
+  featureSlug?: string;
 }): Promise<void> {
-  const { candidates, orgId, brandIds, campaignId, userId, runId, audienceId } =
-    args;
+  const {
+    candidates,
+    orgId,
+    brandIds,
+    campaignId,
+    userId,
+    runId,
+    audienceId,
+    featureSlug,
+  } = args;
   if (candidates.length === 0) return;
 
   // brand-service /orgs/brands/extract-fields is an org-route: it hard-requires
@@ -666,6 +675,11 @@ async function scoreUnscored(args: {
     userId,
     runId,
     audienceId,
+    // Campaign attribution: chat-service tags the judge LLM cost with
+    // campaign_id (daily-budget gate) + brand + feature.
+    campaignId,
+    brandIds,
+    featureSlug,
   });
 
   if (response.results.length === 0) return;
@@ -1154,6 +1168,7 @@ export async function pickNextOpportunity(args: {
   userId?: string;
   runId?: string;
   audienceId?: string;
+  featureSlug?: string;
   scoreThreshold: number;
   eqrsClient: EqrsClient;
 }): Promise<RankedOpportunity | null> {
@@ -1164,6 +1179,7 @@ export async function pickNextOpportunity(args: {
     userId,
     runId,
     audienceId,
+    featureSlug,
     scoreThreshold,
     eqrsClient,
   } = args;
@@ -1209,6 +1225,7 @@ export async function pickNextOpportunity(args: {
       userId,
       runId,
       audienceId,
+      featureSlug,
     });
     console.log(
       `[journalists-quotes-service] /next stage=scored orgId=${orgId} brandIds=${brandIdsLabel} scoredCount=${unscored.length} scoreMs=${Date.now() - scoreStart}`
@@ -1256,10 +1273,19 @@ export async function scoreNextBatch(args: {
   userId?: string;
   runId?: string;
   audienceId?: string;
+  featureSlug?: string;
   eqrsClient: EqrsClient;
 }): Promise<{ scored: number; exhausted: boolean }> {
-  const { orgId, brandIds, campaignId, userId, runId, audienceId, eqrsClient } =
-    args;
+  const {
+    orgId,
+    brandIds,
+    campaignId,
+    userId,
+    runId,
+    audienceId,
+    featureSlug,
+    eqrsClient,
+  } = args;
 
   const startedAt = Date.now();
   const brandIdsLabel = brandIds.join(",");
@@ -1297,6 +1323,7 @@ export async function scoreNextBatch(args: {
     userId,
     runId,
     audienceId,
+    featureSlug,
   });
 
   console.log(

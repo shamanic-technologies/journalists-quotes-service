@@ -106,7 +106,10 @@ export async function withRunTracking(
       },
       req.orgId,
       req.userId,
-      req.audienceId
+      req.audienceId,
+      req.campaignId,
+      req.brandId,
+      req.featureSlug
     );
     req.runId = run.id;
   } catch (err) {

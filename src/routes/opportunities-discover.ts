@@ -79,6 +79,7 @@ export function createOpportunitiesDiscoverRouter(
         userId,
         runId,
         audienceId,
+        featureSlug: req.featureSlug,
         eqrsClient,
       });
     } catch (err) {
