@@ -71,6 +71,7 @@ export function createOpportunitiesNextRouter(
         userId,
         runId,
         audienceId,
+        featureSlug: req.featureSlug,
         scoreThreshold: SCORE_THRESHOLD,
         eqrsClient,
       });

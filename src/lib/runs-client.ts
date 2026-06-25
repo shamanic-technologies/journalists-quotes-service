@@ -17,7 +17,10 @@ export async function createChildRun(
   request: { parentRunId?: string; serviceName: string; taskName: string },
   orgId?: string,
   userId?: string,
-  audienceId?: string
+  audienceId?: string,
+  campaignId?: string,
+  brandId?: string,
+  featureSlug?: string
 ): Promise<CreateRunResponse> {
   const { url, apiKey } = getRunsConfig();
 
@@ -31,6 +34,13 @@ export async function createChildRun(
   // Tag the run row with the campaign audience so runs-service can
   // attribute this run's cost to the right audience (runs.audience_id).
   if (audienceId) headers["x-audience-id"] = audienceId;
+  // Tag the run row with the campaign attribution trio so the daily-budget
+  // gate (campaign-service sums runs_costs by runs.campaign_id) attributes
+  // this run's downstream cost to the triggering campaign + brand + feature.
+  // Absent outside the campaign flux.
+  if (campaignId) headers["x-campaign-id"] = campaignId;
+  if (brandId) headers["x-brand-id"] = brandId;
+  if (featureSlug) headers["x-feature-slug"] = featureSlug;
 
   const response = await fetch(`${url}/v1/runs`, {
     method: "POST",
