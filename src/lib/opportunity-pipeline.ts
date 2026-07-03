@@ -35,7 +35,8 @@ export type PitchStatusValue =
   | "length_violation"
   | "template_missing"
   | "brand_missing_fields"
-  | "insufficient_credits";
+  | "insufficient_credits"
+  | "question_not_found";
 
 export const BLOCK_STATUSES: PitchStatusValue[] = [
   "drafted",
@@ -43,7 +44,24 @@ export const BLOCK_STATUSES: PitchStatusValue[] = [
   "selected",
   "published",
   "not_selected",
+  // A dead Featured question (submit 404 "Question not found") is a
+  // TERMINAL exclusion, not a retryable failure: block it from every
+  // future /next selection for the brand-set so the campaign stops
+  // re-serving it and advances to a live opportunity.
+  "question_not_found",
 ];
+
+/**
+ * A Featured answer submission failed because the target premium question
+ * no longer exists on Featured's side ("Question not found" 404). This is
+ * a PERMANENT death, distinct from a transient/retryable submit error — it
+ * must terminally exclude the question from future selection, whereas a
+ * generic `error` stays re-servable. Matches the literal Featured/EQRS
+ * message. Live questions never match this.
+ */
+export function isDeadQuestionError(message: string | null | undefined): boolean {
+  return typeof message === "string" && /question not found/i.test(message);
+}
 
 /**
  * How a Gold cluster can be acted on from the HITL dashboard:

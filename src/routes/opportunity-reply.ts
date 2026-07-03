@@ -19,6 +19,7 @@ import {
 import { SHARED_EMAIL_ORG_ID } from "../lib/inbound/process.js";
 import {
   computeDelivery,
+  isDeadQuestionError,
   pickRepresentativeSilver,
 } from "../lib/opportunity-pipeline.js";
 import {
@@ -40,7 +41,17 @@ const BLOCK_STATUSES: Array<
   | "selected"
   | "published"
   | "not_selected"
-> = ["drafted", "submitted", "selected", "published", "not_selected"];
+  | "question_not_found"
+> = [
+  "drafted",
+  "submitted",
+  "selected",
+  "published",
+  "not_selected",
+  // A dead Featured question is terminal — short-circuit re-submits so we
+  // never re-hit Featured's 404 for the same brand-set.
+  "question_not_found",
+];
 
 export interface OpportunityReplyDeps {
   eqrsClient?: EqrsClient;
@@ -144,6 +155,20 @@ export function createOpportunityReplyRouter(
     )[0];
 
     if (existingPitch) {
+      // A prior dead-question outcome is terminal, not a successful submit.
+      // Surface it as `question_not_found` (410 Gone) so the caller never
+      // re-attempts the vanished Featured question for this brand-set.
+      if (existingPitch.status === "question_not_found") {
+        res.status(410).json({
+          status: "question_not_found",
+          pitchId: existingPitch.id,
+          deliveryMethod: existingPitch.deliveryMethod,
+          featuredQuestionId: existingPitch.featuredQuestionId,
+          reason:
+            "Featured question no longer exists upstream (submit returned 404). Permanently excluded.",
+        });
+        return;
+      }
       res.json({
         status: "already_submitted",
         pitchId: existingPitch.id,
@@ -219,6 +244,87 @@ interface SilverRowFull {
   opportunityText: string;
 }
 
+/**
+ * Record a permanently-dead Featured question (submit returned 404
+ * "Question not found") and respond 410 Gone. The pitch is written with
+ * the terminal `question_not_found` status, which is BLOCKING (in the
+ * partial unique index + BLOCK_STATUSES), so `/next` never re-serves this
+ * question to the same brand-set again — the campaign advances to a live
+ * opportunity instead of looping on the 404. `onConflictDoNothing` guards
+ * against a race / manual re-call hitting the unique blocking index.
+ */
+async function respondDeadQuestion(args: {
+  res: import("express").Response;
+  opportunityId: string;
+  representative: SilverRowFull;
+  pitchContent: string;
+  brandIds: string[];
+  campaignId?: string;
+  orgId: string;
+  runId?: string;
+  parentRunId: string | null;
+  errorMessage: string;
+}) {
+  const {
+    res,
+    opportunityId,
+    representative,
+    pitchContent,
+    brandIds,
+    campaignId,
+    orgId,
+    runId,
+    parentRunId,
+    errorMessage,
+  } = args;
+
+  const inserted = await db
+    .insert(quotePitches)
+    .values({
+      quoteRequestId: representative.id,
+      quoteOpportunityId: opportunityId,
+      featuredQuestionId: representative.featuredQuestionId,
+      campaignId: campaignId ?? null,
+      brandIds,
+      draft: pitchContent,
+      status: "question_not_found",
+      deliveryMethod: "featured_api",
+      deliveryTarget: representative.pitchUrl ?? null,
+      error: errorMessage,
+      parentRunId,
+      runId: runId ?? null,
+      orgId,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  let pitchId = inserted[0]?.id;
+  if (!pitchId) {
+    const [existing] = await db
+      .select({ id: quotePitches.id })
+      .from(quotePitches)
+      .where(
+        and(
+          eq(quotePitches.quoteOpportunityId, opportunityId),
+          eq(quotePitches.brandIds, brandIds),
+          eq(quotePitches.status, "question_not_found")
+        )
+      )
+      .limit(1);
+    pitchId = existing?.id;
+  }
+
+  res.status(410).json({
+    status: "question_not_found",
+    error: errorMessage,
+    pitchId,
+    deliveryMethod: "featured_api",
+    featuredQuestionId: representative.featuredQuestionId,
+    reason:
+      "Featured question no longer exists upstream (submit returned 404). Permanently excluded from future selection.",
+  });
+}
+
 async function handleFeaturedReply(args: {
   res: import("express").Response;
   opportunityId: string;
@@ -290,6 +396,24 @@ async function handleFeaturedReply(args: {
       res.status(402).json({ error: err.message });
       return;
     }
+    const message = (err as Error).message;
+    // A dead Featured question (404 "Question not found") is terminal, not a
+    // retryable error — mark it blocking so it is never re-served.
+    if (isDeadQuestionError(message)) {
+      await respondDeadQuestion({
+        res,
+        opportunityId,
+        representative,
+        pitchContent,
+        brandIds,
+        campaignId,
+        orgId,
+        runId,
+        parentRunId,
+        errorMessage: message,
+      });
+      return;
+    }
     const [pitch] = await db
       .insert(quotePitches)
       .values({
@@ -302,7 +426,7 @@ async function handleFeaturedReply(args: {
         status: "error",
         deliveryMethod: "featured_api",
         deliveryTarget: representative.pitchUrl ?? null,
-        error: (err as Error).message,
+        error: message,
         parentRunId,
         runId: runId ?? null,
         orgId,
@@ -310,7 +434,7 @@ async function handleFeaturedReply(args: {
       .returning();
     res.status(502).json({
       status: "error",
-      error: (err as Error).message,
+      error: message,
       pitchId: pitch.id,
     });
     return;
@@ -325,6 +449,25 @@ async function handleFeaturedReply(args: {
   }
 
   if (submitResult.status === "error") {
+    // EQRS surfaces a dead Featured question as a 200 error result whose
+    // message is "Featured POST /answer-question failed (404): Question not
+    // found". Treat that as terminal + blocking (never re-serve); any other
+    // submit error stays a retryable `error`.
+    if (isDeadQuestionError(submitResult.error)) {
+      await respondDeadQuestion({
+        res,
+        opportunityId,
+        representative,
+        pitchContent,
+        brandIds,
+        campaignId,
+        orgId,
+        runId,
+        parentRunId,
+        errorMessage: submitResult.error,
+      });
+      return;
+    }
     const [pitch] = await db
       .insert(quotePitches)
       .values({

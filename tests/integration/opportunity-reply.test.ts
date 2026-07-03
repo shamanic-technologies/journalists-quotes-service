@@ -556,4 +556,83 @@ describe("POST /orgs/opportunities/:id/reply", () => {
     expect(pitches).toHaveLength(1);
     expect(pitches[0].status).toBe("error");
   });
+
+  it("marks a dead Featured question (404 Question not found) as terminal question_not_found + returns 410", async () => {
+    // EQRS surfaces a permanently-dead question as a 200 error result whose
+    // message is "...(404): Question not found". JQS must record it with the
+    // terminal, BLOCKING status question_not_found so /next never re-serves
+    // it — stopping the infinite 404 re-fail loop (prod question 83147).
+    const { opp } = await seedFeaturedCluster(83147);
+    state.submitImpl = async () => ({
+      status: "error",
+      error:
+        "Featured POST /answer-question failed (404): Question not found",
+    });
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${opp.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
+
+    expect(res.status).toBe(410);
+    expect(res.body.status).toBe("question_not_found");
+    expect(state.submitCalls).toHaveLength(1);
+
+    const pitches = await db.select().from(quotePitches);
+    expect(pitches).toHaveLength(1);
+    expect(pitches[0].status).toBe("question_not_found");
+    expect(pitches[0].deliveryMethod).toBe("featured_api");
+    expect(pitches[0].brandIds).toEqual([TEST_BRAND]);
+  });
+
+  it("dead question via EqrsServiceError 404 throw is also marked question_not_found + 410", async () => {
+    const { opp } = await seedFeaturedCluster(83148);
+    state.submitImpl = async () => {
+      throw new EqrsServiceError(
+        "EQRS POST /orgs/featured/answers failed (404): Question not found",
+        404
+      );
+    };
+
+    const res = await request(app())
+      .post(`/orgs/opportunities/${opp.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send({ pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A });
+
+    expect(res.status).toBe(410);
+    expect(res.body.status).toBe("question_not_found");
+    const pitches = await db.select().from(quotePitches);
+    expect(pitches).toHaveLength(1);
+    expect(pitches[0].status).toBe("question_not_found");
+  });
+
+  it("a second reply to a dead question short-circuits (410) WITHOUT re-submitting to Featured", async () => {
+    const { opp } = await seedFeaturedCluster(83149);
+    state.submitImpl = async () => ({
+      status: "error",
+      error:
+        "Featured POST /answer-question failed (404): Question not found",
+    });
+    const body = { pitchContent: "x".repeat(200), campaignId: TEST_CAMPAIGN_A };
+
+    const first = await request(app())
+      .post(`/orgs/opportunities/${opp.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send(body);
+    expect(first.status).toBe(410);
+    expect(first.body.status).toBe("question_not_found");
+    expect(state.submitCalls).toHaveLength(1);
+
+    const second = await request(app())
+      .post(`/orgs/opportunities/${opp.id}/reply`)
+      .set(AUTH_HEADERS)
+      .send(body);
+    expect(second.status).toBe(410);
+    expect(second.body.status).toBe("question_not_found");
+    // No second Featured submit — the dead row short-circuits the idempotency
+    // check, and only ONE dead pitch row exists (no unique-index crash).
+    expect(state.submitCalls).toHaveLength(1);
+    const pitches = await db.select().from(quotePitches);
+    expect(pitches).toHaveLength(1);
+  });
 });
