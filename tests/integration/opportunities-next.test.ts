@@ -511,6 +511,65 @@ describe("POST /orgs/opportunities/next (premium questions)", () => {
     expect(second.body.opportunity.featuredQuestionId).toBe(12);
   });
 
+  it("excludes a dead Featured question (question_not_found) from selection — no infinite 404 loop", async () => {
+    // Prod bug (question 83147): a Featured submit that 404s "Question not
+    // found" writes a terminal question_not_found pitch. That status is
+    // BLOCKING, so /next must never re-serve the dead question — it advances
+    // to the next live opportunity instead of looping on the 404 every run.
+    state.premiumQuestions = [
+      makePremiumQuestion({
+        featuredQuestionId: 11,
+        question: "high signal top",
+        mediaOutlet: "Outlet 1",
+      }),
+      makePremiumQuestion({
+        featuredQuestionId: 12,
+        question: "mid signal second",
+        mediaOutlet: "Outlet 2",
+      }),
+    ];
+
+    const a = app();
+    const first = await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(first.body.opportunity.featuredQuestionId).toBe(11);
+    const firstGoldId = first.body.opportunity.opportunityId;
+
+    const silverTop = (
+      await db
+        .select()
+        .from(providerQuoteRequests)
+        .where(eq(providerQuoteRequests.externalId, "featured-premium-11"))
+    )[0];
+    await db.insert(quotePitches).values({
+      quoteRequestId: silverTop.id,
+      quoteOpportunityId: firstGoldId,
+      featuredQuestionId: 11,
+      campaignId: TEST_CAMPAIGN_A,
+      brandIds: [TEST_BRAND],
+      status: "question_not_found",
+      deliveryMethod: "featured_api",
+      error: "Featured POST /answer-question failed (404): Question not found",
+      orgId: TEST_ORG_A,
+    });
+
+    const second = await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(second.body.found).toBe(true);
+    expect(second.body.opportunity.featuredQuestionId).toBe(12);
+
+    // And it stays excluded on a subsequent run (never re-served).
+    const third = await request(a)
+      .post("/orgs/opportunities/next")
+      .set(AUTH_HEADERS)
+      .send({});
+    expect(third.body.opportunity?.featuredQuestionId).not.toBe(11);
+  });
+
   it("co-brand pitch [A,B] does NOT block solo /next for [A]", async () => {
     state.premiumQuestions = [
       makePremiumQuestion({

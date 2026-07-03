@@ -1,8 +1,42 @@
 import { describe, it, expect } from "vitest";
 import {
   computeDelivery,
+  isDeadQuestionError,
   pickRepresentativeSilver,
 } from "../../src/lib/opportunity-pipeline.js";
+
+describe("isDeadQuestionError", () => {
+  it("matches the Featured 404 dead-question message (EQRS 200-error body)", () => {
+    expect(
+      isDeadQuestionError(
+        "Featured POST /answer-question failed (404): Question not found"
+      )
+    ).toBe(true);
+  });
+
+  it("matches the EqrsServiceError-wrapped dead-question message", () => {
+    expect(
+      isDeadQuestionError(
+        "EQRS POST /orgs/featured/answers failed (404): Question not found"
+      )
+    ).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(isDeadQuestionError("QUESTION NOT FOUND")).toBe(true);
+  });
+
+  it("does NOT match a generic/transient submit error (stays retryable)", () => {
+    expect(isDeadQuestionError("featured submit failed downstream")).toBe(false);
+    expect(isDeadQuestionError("insufficient credit")).toBe(false);
+    expect(isDeadQuestionError("timeout")).toBe(false);
+  });
+
+  it("handles null/undefined safely", () => {
+    expect(isDeadQuestionError(null)).toBe(false);
+    expect(isDeadQuestionError(undefined)).toBe(false);
+  });
+});
 
 describe("computeDelivery", () => {
   it("featured + featuredQuestionId → submittable via featured_api", () => {

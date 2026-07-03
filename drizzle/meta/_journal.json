@@ -43,6 +43,13 @@
       "when": 1779964800000,
       "tag": "0005_eqrs_migration",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1782000000000,
+      "tag": "0006_dead_question_status",
+      "breakpoints": true
     }
   ]
 }

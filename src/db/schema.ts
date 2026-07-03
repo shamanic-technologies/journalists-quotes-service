@@ -25,6 +25,12 @@ export const pitchStatusEnum = pgEnum("pitch_status", [
   "template_missing",
   "brand_missing_fields",
   "insufficient_credits",
+  // Terminal: the Featured question no longer exists upstream (submit
+  // returned 404 "Question not found"). Unlike the retryable `error`
+  // status, this is BLOCKING — it participates in the partial unique
+  // index (NOT listed in the exclusion below) and in BLOCK_STATUSES, so
+  // a permanently-dead question is never re-served to the same brand-set.
+  "question_not_found",
 ]);
 
 export const processingStatusEnum = pgEnum("processing_status", [

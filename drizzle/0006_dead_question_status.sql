@@ -1,0 +1,14 @@
+-- Add a terminal, BLOCKING pitch status for a Featured premium question
+-- that no longer exists upstream (submit returns 404 "Question not found").
+--
+-- Unlike the retryable `error` status, `question_not_found` is deliberately
+-- LEFT OUT of the partial-unique-index exclusion list on quote_pitches, so a
+-- dead-question row participates in the (quote_opportunity_id, brand_ids[])
+-- blocking index and in BLOCK_STATUSES. Effect: a permanently-dead question
+-- is excluded from `/opportunities/next` selection for the brand-set forever,
+-- so the campaign stops looping on the 404 and advances to a live opportunity.
+--
+-- Enum values are additive; no existing rows change. IF NOT EXISTS keeps the
+-- migration idempotent. (Kept out of a data-mutating statement in the same
+-- migration so Postgres does not reject using the new value pre-commit.)
+ALTER TYPE "pitch_status" ADD VALUE IF NOT EXISTS 'question_not_found';
