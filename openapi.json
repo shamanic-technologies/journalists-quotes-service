@@ -178,7 +178,8 @@
           "length_violation",
           "template_missing",
           "brand_missing_fields",
-          "insufficient_credits"
+          "insufficient_credits",
+          "question_not_found"
         ]
       },
       "RankedOpportunity": {
@@ -554,7 +555,8 @@
               "length_violation",
               "template_missing",
               "brand_missing_fields",
-              "insufficient_credits"
+              "insufficient_credits",
+              "question_not_found"
             ]
           },
           "deliveryMethod": {
@@ -1422,7 +1424,8 @@
                 "length_violation",
                 "template_missing",
                 "brand_missing_fields",
-                "insufficient_credits"
+                "insufficient_credits",
+                "question_not_found"
               ]
             },
             "required": false,
