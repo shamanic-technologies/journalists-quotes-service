@@ -119,6 +119,9 @@ export const QuotePitchSchema = z
       "template_missing",
       "brand_missing_fields",
       "insufficient_credits",
+      // Terminal, BLOCKING: dead Featured question (submit 404 "Question
+      // not found"). Served on the wire by GET /orgs/quote-pitches[/:id].
+      "question_not_found",
     ]),
     deliveryMethod: z.enum(["featured_api", "email_reply"]),
     deliveryTarget: z.string().nullable(),
@@ -150,6 +153,7 @@ export const QuotePitchListQuerySchema = z.object({
       "template_missing",
       "brand_missing_fields",
       "insufficient_credits",
+      "question_not_found",
     ])
     .optional(),
   limit: z.string().optional(),
@@ -186,6 +190,9 @@ export const PitchStatusSchema = z
     "template_missing",
     "brand_missing_fields",
     "insufficient_credits",
+    // Terminal, BLOCKING dead-question status — annotated on the wire by
+    // GET /orgs/opportunities + /ranked pitchStatus (brand-atomic).
+    "question_not_found",
   ])
   .openapi("PitchStatus");
 
