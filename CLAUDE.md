@@ -71,6 +71,8 @@ Featured.com is no longer a direct JQS dependency — EQRS owns it.
 
 **No `release.sh`, no `staging` branch.** This service ships straight from `main` (Railway deploys `main`). Hotfix AND feature both: branch off `origin/main` → `gh pr create --base main` → `gh pr merge <N> --squash` (no `release.sh hotfix`, no staging promote). No required CI checks gate the merge (`gh pr checks` reports none) — `tsc --noEmit` + `pnpm test` locally are the gate.
 
+**Contract verification = PROD registry, not staging.** Because JQS is main-only (no staging deploy), it is ABSENT from `mcp__api-registry-staging__*` (registry name there = a DIFFERENT `journalists`-service). Verify deployed OpenAPI via the **prod** `mcp__api-registry__*` under service name **`journalists-quotes`**. A brief that says "verify on api-registry-staging" is wrong for this repo. (2026-07-04, PR #97 quote-pitches enum.)
+
 ## Tests
 
 - `pnpm test` runs unit + integration. Integration tests need a local Postgres reachable at `JOURNALISTS_QUOTES_SERVICE_DATABASE_URL` (DB schema applied via `pnpm drizzle-kit migrate` — see `tests/setup.ts` for the default URL).
