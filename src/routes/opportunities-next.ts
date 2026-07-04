@@ -16,7 +16,12 @@ import {
   requireOpportunityIdentity,
 } from "../lib/identity-guard.js";
 
-const SCORE_THRESHOLD = Number(process.env.SCORE_THRESHOLD ?? "30");
+// Auto-submit floor for /next. Deliberately DECOUPLED from the judge's
+// semantic bands (≥70 direct / ≥30 adjacent / <30 off-topic): the floor is the
+// minimum score /next will auto-pitch, NOT a band boundary. Set to 10 so /next
+// also surfaces weak-but-non-noise opportunities (10-29), not only adjacent+
+// (≥30). Reads (GET /orgs/opportunities) have NO floor regardless.
+const SCORE_THRESHOLD = Number(process.env.SCORE_THRESHOLD ?? "10");
 
 export interface OpportunitiesNextDeps {
   eqrsClient?: EqrsClient;
