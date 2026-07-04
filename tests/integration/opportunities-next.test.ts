@@ -35,7 +35,9 @@ import {
 import { judgeRelevance } from "../../src/lib/judge-client.js";
 import { extractBrandContext } from "../../src/lib/brand-client.js";
 
-// LLM judge mock: high→85, mid→50, else→15 (0-100 scale).
+// LLM judge mock: high→85, mid→50, else→5 (0-100 scale).
+// else is 5 (below the 10 auto-submit floor) so the "below SCORE_THRESHOLD"
+// case stays sub-floor; high/mid remain servable.
 vi.mock("../../src/lib/judge-client.js", () => ({
   judgeRelevance: vi.fn(
     async (args: { documents: { id: string; text: string }[] }) => ({
@@ -45,7 +47,7 @@ vi.mock("../../src/lib/judge-client.js", () => ({
           ? 85
           : /mid/i.test(d.text)
             ? 50
-            : 15,
+            : 5,
         reasoning: "test judge",
       })),
     })
