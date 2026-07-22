@@ -19,7 +19,10 @@ import {
   type OpportunityReplyDeps,
 } from "../../src/routes/opportunity-reply.js";
 import quoteRequestsRoutes from "../../src/routes/quote-requests.js";
-import quotePitchesRoutes from "../../src/routes/quote-pitches.js";
+import {
+  createQuotePitchesRouter,
+  type QuotePitchesDeps,
+} from "../../src/routes/quote-pitches.js";
 import processInboundEmailsRoutes from "../../src/routes/process-inbound-emails.js";
 import inboundEmailRoutes from "../../src/routes/webhooks/inbound-email.js";
 import {
@@ -34,6 +37,7 @@ export interface TestAppDeps {
   opportunitiesDiscoverDeps?: OpportunitiesDiscoverDeps;
   opportunitiesRankedDeps?: OpportunitiesRankedDeps;
   opportunityReplyDeps?: OpportunityReplyDeps;
+  quotePitchesDeps?: QuotePitchesDeps;
   skipHmacVerify?: boolean;
 }
 
@@ -67,7 +71,7 @@ export function createTestApp(deps: TestAppDeps = {}) {
   app.use(createOpportunitiesRankedRouter(deps.opportunitiesRankedDeps));
   app.use(createOpportunityReplyRouter(deps.opportunityReplyDeps));
   app.use(quoteRequestsRoutes);
-  app.use(quotePitchesRoutes);
+  app.use(createQuotePitchesRouter(deps.quotePitchesDeps));
 
   app.use((_req: express.Request, res: express.Response) => {
     res.status(404).json({ error: "Not found" });

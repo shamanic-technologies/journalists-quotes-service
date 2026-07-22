@@ -50,6 +50,13 @@
       "when": 1782000000000,
       "tag": "0006_dead_question_status",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784236800000,
+      "tag": "0007_pitch_outcome_reconcile",
+      "breakpoints": true
     }
   ]
 }

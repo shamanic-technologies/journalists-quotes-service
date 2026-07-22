@@ -586,6 +586,22 @@
             "type": "string",
             "nullable": true
           },
+          "outcomeObservedAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "publicationSource": {
+            "type": "string",
+            "nullable": true
+          },
+          "outletDomainRating": {
+            "type": "integer",
+            "nullable": true
+          },
+          "backlinkAttribution": {
+            "type": "string",
+            "nullable": true
+          },
           "error": {
             "type": "string",
             "nullable": true
@@ -634,12 +650,55 @@
           "replyInThreadMessageId",
           "bounceStatus",
           "featuredArticleUrl",
+          "outcomeObservedAt",
+          "publicationSource",
+          "outletDomainRating",
+          "backlinkAttribution",
           "error",
           "parentRunId",
           "runId",
           "orgId",
           "createdAt",
           "updatedAt"
+        ]
+      },
+      "ReconcileOutcomesResponse": {
+        "type": "object",
+        "properties": {
+          "outcomesFetched": {
+            "type": "integer"
+          },
+          "pitchesScanned": {
+            "type": "integer"
+          },
+          "updated": {
+            "type": "integer"
+          },
+          "advanced": {
+            "type": "object",
+            "properties": {
+              "selected": {
+                "type": "integer"
+              },
+              "published": {
+                "type": "integer"
+              },
+              "not_selected": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "selected",
+              "published",
+              "not_selected"
+            ]
+          }
+        },
+        "required": [
+          "outcomesFetched",
+          "pitchesScanned",
+          "updated",
+          "advanced"
         ]
       },
       "InboundEmailAcceptedResponse": {
@@ -1476,6 +1535,50 @@
                   "required": [
                     "quotePitches"
                   ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/quote-pitches/reconcile-outcomes": {
+      "post": {
+        "summary": "Reconcile pitch publication outcomes from Featured/Connectively",
+        "description": "Pulls the org's Connectively submission outcomes (via EQRS `GET /orgs/featured/submissions`) and advances matching pitches — matched on (featured_question_id, featured_profile_id) — from `submitted` to `selected` / `published` / `not_selected`, and records the placement outlet (`publicationSource`), outlet DR (`outletDomainRating`), and backlink attribution (`backlinkAttribution`). Forward-only and idempotent. Connectively exposes NO published article URL, article title, or per-stage timestamp, so `featuredArticleUrl` is never set here and `outcomeObservedAt` is OUR observation time. Fail-loud: an EQRS error surfaces as 502.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "x-org-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Reconcile summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconcileOutcomesResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "EQRS/Connectively unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }

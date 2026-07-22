@@ -129,6 +129,18 @@ export const QuotePitchSchema = z
     replyInThreadMessageId: z.string().nullable(),
     bounceStatus: z.string().nullable(),
     featuredArticleUrl: z.string().nullable(),
+    // Featured/Connectively publication-outcome enrichment (reconcile).
+    // When WE observed the current selected/published/not_selected stage
+    // (Connectively exposes no stage timestamp of its own).
+    outcomeObservedAt: z.string().nullable(),
+    // Placement outlet name from Connectively `publicationSource` (a bare
+    // label, not a URL — Connectively exposes no article URL/title).
+    publicationSource: z.string().nullable(),
+    // Outlet domain rating (Connectively `domainAuthority`, 0-100).
+    outletDomainRating: z.number().int().nullable(),
+    // Backlink attribution verbatim from Connectively `attribution`
+    // ("DoFollow" | "Unlinked" | "Unknown").
+    backlinkAttribution: z.string().nullable(),
     error: z.string().nullable(),
     errorDetails: z.unknown().nullable(),
     parentRunId: z.string().uuid().nullable(),
@@ -138,6 +150,19 @@ export const QuotePitchSchema = z
     updatedAt: z.string(),
   })
   .openapi("QuotePitch");
+
+export const ReconcileOutcomesResponseSchema = z
+  .object({
+    outcomesFetched: z.number().int(),
+    pitchesScanned: z.number().int(),
+    updated: z.number().int(),
+    advanced: z.object({
+      selected: z.number().int(),
+      published: z.number().int(),
+      not_selected: z.number().int(),
+    }),
+  })
+  .openapi("ReconcileOutcomesResponse");
 
 export const QuotePitchListQuerySchema = z.object({
   campaign_id: z.string().uuid().optional(),
@@ -604,6 +629,30 @@ registry.registerPath({
           schema: z.object({ quotePitches: z.array(QuotePitchSchema) }),
         },
       },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/orgs/quote-pitches/reconcile-outcomes",
+  summary: "Reconcile pitch publication outcomes from Featured/Connectively",
+  description:
+    "Pulls the org's Connectively submission outcomes (via EQRS `GET /orgs/featured/submissions`) and advances matching pitches — matched on (featured_question_id, featured_profile_id) — from `submitted` to `selected` / `published` / `not_selected`, and records the placement outlet (`publicationSource`), outlet DR (`outletDomainRating`), and backlink attribution (`backlinkAttribution`). Forward-only and idempotent. Connectively exposes NO published article URL, article title, or per-stage timestamp, so `featuredArticleUrl` is never set here and `outcomeObservedAt` is OUR observation time. Fail-loud: an EQRS error surfaces as 502.",
+  security: [{ [apiKeyAuth.name]: [] }],
+  request: { headers: orgHeadersOptionalBrand },
+  responses: {
+    200: {
+      description: "Reconcile summary",
+      content: {
+        "application/json": {
+          schema: ReconcileOutcomesResponseSchema,
+        },
+      },
+    },
+    502: {
+      description: "EQRS/Connectively unavailable",
+      content: { "application/json": { schema: ErrorResponseSchema } },
     },
   },
 });

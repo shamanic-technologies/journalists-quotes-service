@@ -5,13 +5,16 @@ import type {
   EqrsPremiumQuestion,
   EqrsPremiumQuestionsResponse,
   EqrsSubmitResult,
+  EqrsSubmittedOutcome,
 } from "../../src/lib/eqrs-client.js";
 
 export interface MockEqrsState {
   opportunities: EqrsOpportunity[];
   premiumQuestions: EqrsPremiumQuestion[];
+  submittedOutcomes: EqrsSubmittedOutcome[];
   fetchCalls: number;
   premiumFetchCalls: number;
+  submittedFetchCalls: number;
   fetchSinceLog: Array<string | undefined>;
   submitCalls: Array<{
     orgId: string;
@@ -19,6 +22,7 @@ export interface MockEqrsState {
     featuredQuestionId: number;
     answer: string;
   }>;
+  submittedFetchImpl?: () => EqrsSubmittedOutcome[];
   submitImpl?: (input: {
     orgId: string;
     brandId: string;
@@ -35,8 +39,10 @@ export function createMockEqrsState(
   return {
     opportunities: [],
     premiumQuestions: [],
+    submittedOutcomes: [],
     fetchCalls: 0,
     premiumFetchCalls: 0,
+    submittedFetchCalls: 0,
     fetchSinceLog: [],
     submitCalls: [],
     ...overrides,
@@ -83,6 +89,30 @@ export function buildMockEqrsClient(state: MockEqrsState): EqrsClient {
         featuredProfileId: 1234,
       };
     },
+    async fetchSubmittedOutcomes() {
+      state.submittedFetchCalls++;
+      if (state.submittedFetchImpl) return state.submittedFetchImpl();
+      return state.submittedOutcomes;
+    },
+  };
+}
+
+/** Helper to build a well-formed `EqrsSubmittedOutcome` for tests. */
+export function makeSubmittedOutcome(
+  overrides: Partial<EqrsSubmittedOutcome> & {
+    featuredQuestionId: number;
+    profileId: number;
+    status: string;
+  }
+): EqrsSubmittedOutcome {
+  return {
+    featuredQuestionId: overrides.featuredQuestionId,
+    profileId: overrides.profileId,
+    status: overrides.status,
+    publicationSource: overrides.publicationSource ?? null,
+    domainAuthority: overrides.domainAuthority ?? null,
+    attribution: overrides.attribution ?? null,
+    submissionDate: overrides.submissionDate ?? null,
   };
 }
 
