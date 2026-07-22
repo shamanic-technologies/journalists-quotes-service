@@ -201,6 +201,14 @@ export const eqrsSyncState = pgTable("eqrs_sync_state", {
   orgId: uuid("org_id").primaryKey(),
   lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
   lastCursor: text("last_cursor"),
+  // Throttle marker for the pitch-outcome reconcile poll (Connectively
+  // has no publication webhook, so the outcome must be polled). The
+  // report's GET /orgs/quote-pitches fires a best-effort reconcile at
+  // most once per RECONCILE_THROTTLE_MS per org; the explicit
+  // POST /orgs/quote-pitches/reconcile-outcomes ignores this throttle.
+  lastOutcomeReconciledAt: timestamp("last_outcome_reconciled_at", {
+    withTimezone: true,
+  }),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -233,6 +241,32 @@ export const quotePitches = pgTable(
     replyInThreadMessageId: text("reply_in_thread_message_id"),
     bounceStatus: text("bounce_status"),
     featuredArticleUrl: text("featured_article_url"),
+    // ---- Featured/Connectively publication-outcome reconcile fields ----
+    // Populated by reconcilePitchOutcomes from EQRS's Connectively
+    // `/submitted` pass-through, matched on (featured_question_id,
+    // featured_profile_id). `status` advances submitted → selected /
+    // published / not_selected; these columns carry the press-value
+    // metadata Connectively exposes alongside the outcome.
+    //
+    // NOTE: Connectively's `/submitted` payload does NOT expose the
+    // published article URL, the article title, or a per-stage
+    // (selected/published) timestamp — only the current status +
+    // outlet + DR + backlink attribution. So `featured_article_url`
+    // stays null from this path (no fabrication), and
+    // `outcome_observed_at` records when WE observed the outcome, not
+    // Connectively's own stage time (which is not in the API). See #100.
+    outcomeObservedAt: timestamp("outcome_observed_at", {
+      withTimezone: true,
+    }),
+    // Connectively `publicationSource` — the placement outlet name
+    // (bare label, e.g. "The Epoch Times"), NOT a URL.
+    publicationSource: text("publication_source"),
+    // Connectively `domainAuthority` — the outlet's DR (0-100).
+    outletDomainRating: integer("outlet_domain_rating"),
+    // Connectively `attribution` verbatim: "DoFollow" | "Unlinked" |
+    // "Unknown" (backlink type of the published mention). Stored raw so
+    // no information is lost; the consumer maps to dofollow/nofollow/none.
+    backlinkAttribution: text("backlink_attribution"),
     error: text("error"),
     errorDetails: jsonb("error_details"),
     parentRunId: uuid("parent_run_id"),

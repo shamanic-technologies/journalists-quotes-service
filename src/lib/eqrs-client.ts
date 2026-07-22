@@ -78,6 +78,27 @@ export type EqrsSubmitResult =
   | { status: "rate_limited"; retryAfter: number }
   | { status: "error"; error: string };
 
+/**
+ * A single Featured/Connectively submission record, as decoded from EQRS's
+ * `GET /orgs/featured/submissions` pass-through (Connectively `/submitted`).
+ *
+ * The match key onto a JQS pitch is `(featuredQuestionId, profileId)` — the
+ * exact pair JQS stores as `(featured_question_id, featured_profile_id)`.
+ *
+ * `status` is Connectively's verbatim label (`In Review` | `Selected` |
+ * `Published` | `Not Selected`). Connectively exposes NO published article
+ * URL, article title, or per-stage timestamp — only these fields.
+ */
+export interface EqrsSubmittedOutcome {
+  featuredQuestionId: number;
+  profileId: number;
+  status: string;
+  publicationSource: string | null;
+  domainAuthority: number | null;
+  attribution: string | null;
+  submissionDate: string | null;
+}
+
 export interface EqrsClient {
   fetchOpportunities(args: {
     orgId: string;
@@ -104,6 +125,19 @@ export interface EqrsClient {
     featuredQuestionId: number;
     answer: string;
   }): Promise<EqrsSubmitResult>;
+
+  /**
+   * Pull the full list of Featured/Connectively submission outcomes for the
+   * org (paginated internally). Used by the pitch-outcome reconcile to
+   * advance pitch status + record press-value metadata. Throws
+   * EqrsServiceError on a non-2xx from EQRS. NO silent fallback.
+   */
+  fetchSubmittedOutcomes(args: {
+    orgId: string;
+    userId?: string;
+    runId?: string;
+    audienceId?: string;
+  }): Promise<EqrsSubmittedOutcome[]>;
 }
 
 export interface EqrsClientOptions {
@@ -211,6 +245,85 @@ export function createEqrsClient(
         );
       }
       return (await response.json()) as EqrsSubmitResult;
+    },
+
+    async fetchSubmittedOutcomes(args) {
+      const { baseUrl, apiKey } = requireEnv();
+      const headers: Record<string, string> = {
+        "x-api-key": apiKey,
+        "x-org-id": args.orgId,
+      };
+      if (args.userId) headers["x-user-id"] = args.userId;
+      if (args.runId) headers["x-run-id"] = args.runId;
+      if (args.audienceId) headers["x-audience-id"] = args.audienceId;
+
+      const PAGE_SIZE = 100;
+      const MAX_PAGES = 100; // safety cap: 10k submissions
+      const outcomes: EqrsSubmittedOutcome[] = [];
+
+      for (let page = 1; page <= MAX_PAGES; page++) {
+        const response = await fetchImpl(
+          `${baseUrl}/orgs/featured/submissions?page=${page}`,
+          { method: "GET", headers }
+        );
+        if (!response.ok) {
+          const body = await response.text();
+          throw new EqrsServiceError(
+            `EQRS GET /orgs/featured/submissions failed (${response.status}): ${body}`,
+            response.status,
+            body
+          );
+        }
+        const payload = (await response.json()) as Record<string, unknown>;
+        // EQRS is a pass-through of Connectively `/submitted`, which returns
+        // `{ submitted: [...] }`. Accept `data` too (the endpoint's OpenAPI
+        // types it that way) but fail loud if neither is an array — never a
+        // silent empty.
+        const rawList =
+          (payload.submitted as unknown) ?? (payload.data as unknown);
+        if (!Array.isArray(rawList)) {
+          throw new EqrsServiceError(
+            `EQRS GET /orgs/featured/submissions returned unexpected shape (expected { submitted: [...] }): ${JSON.stringify(
+              payload
+            ).slice(0, 200)}`,
+            502
+          );
+        }
+        for (const raw of rawList as Array<Record<string, unknown>>) {
+          const featuredQuestionId = raw.featuredQuestionId;
+          const profileId = raw.profileId;
+          // A submission with no (question, profile) pair cannot be matched
+          // to a pitch — skip it (not fabricating a key).
+          if (
+            typeof featuredQuestionId !== "number" ||
+            typeof profileId !== "number"
+          ) {
+            continue;
+          }
+          outcomes.push({
+            featuredQuestionId,
+            profileId,
+            status: typeof raw.status === "string" ? raw.status : "",
+            publicationSource:
+              typeof raw.publicationSource === "string"
+                ? raw.publicationSource
+                : null,
+            domainAuthority:
+              typeof raw.domainAuthority === "number"
+                ? raw.domainAuthority
+                : null,
+            attribution:
+              typeof raw.attribution === "string" ? raw.attribution : null,
+            submissionDate:
+              typeof raw.submissionDate === "string"
+                ? raw.submissionDate
+                : null,
+          });
+        }
+        if (rawList.length < PAGE_SIZE) break;
+      }
+
+      return outcomes;
     },
   };
 }
