@@ -256,4 +256,88 @@ describe("createEqrsClient", () => {
       );
     });
   });
+
+  describe("fetchPublishedArticles", () => {
+    it("issues GET /orgs/featured/published + decodes publishedLink→articleUrl", async () => {
+      fetchSpy.mockResolvedValue(
+        jsonResponse({
+          published: [
+            {
+              publishDate: "2026-07-22T00:00:00.000Z",
+              articleTitle: "Some Great Article",
+              publishedLink: "https://brettfarmiloe.com/some-article/",
+              publicationSource: "Brett Farmiloe",
+              domainAuthority: 21,
+              attribution: "DoFollow",
+              profileId: 94058,
+              featuredQuestionId: 83460,
+            },
+          ],
+        })
+      );
+      const client = createEqrsClient({
+        fetchImpl: fetchSpy as unknown as typeof fetch,
+      });
+      const res = await client.fetchPublishedArticles({
+        orgId: "org-1",
+        userId: "user-7",
+        runId: "run-9",
+      });
+      const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+      expect(new URL(String(url)).pathname).toBe("/orgs/featured/published");
+      const headers = init.headers as Record<string, string>;
+      expect(headers["x-api-key"]).toBe(EQRS_KEY);
+      expect(headers["x-org-id"]).toBe("org-1");
+      expect(res).toHaveLength(1);
+      expect(res[0].featuredQuestionId).toBe(83460);
+      expect(res[0].profileId).toBe(94058);
+      expect(res[0].articleUrl).toBe(
+        "https://brettfarmiloe.com/some-article/"
+      );
+      expect(res[0].articleTitle).toBe("Some Great Article");
+      expect(res[0].publishDate).toBe("2026-07-22T00:00:00.000Z");
+    });
+
+    it("skips a record with no (question, profile) key; nulls a missing title", async () => {
+      fetchSpy.mockResolvedValue(
+        jsonResponse({
+          published: [
+            { publishedLink: "https://x.com/a" }, // no ids → skipped
+            {
+              publishedLink: "https://x.com/b",
+              profileId: 1,
+              featuredQuestionId: 2,
+            }, // no articleTitle → null
+          ],
+        })
+      );
+      const client = createEqrsClient({
+        fetchImpl: fetchSpy as unknown as typeof fetch,
+      });
+      const res = await client.fetchPublishedArticles({ orgId: "org-1" });
+      expect(res).toHaveLength(1);
+      expect(res[0].articleUrl).toBe("https://x.com/b");
+      expect(res[0].articleTitle).toBeNull();
+    });
+
+    it("throws on an unexpected shape (fail-loud, never silent empty)", async () => {
+      fetchSpy.mockResolvedValue(jsonResponse({ nope: true }));
+      const client = createEqrsClient({
+        fetchImpl: fetchSpy as unknown as typeof fetch,
+      });
+      await expect(
+        client.fetchPublishedArticles({ orgId: "org-1" })
+      ).rejects.toThrow(/unexpected shape/);
+    });
+
+    it("throws on non-2xx response (fail-loud)", async () => {
+      fetchSpy.mockResolvedValue(new Response("upstream boom", { status: 502 }));
+      const client = createEqrsClient({
+        fetchImpl: fetchSpy as unknown as typeof fetch,
+      });
+      await expect(
+        client.fetchPublishedArticles({ orgId: "org-1" })
+      ).rejects.toThrow(/EQRS GET \/orgs\/featured\/published failed \(502\)/);
+    });
+  });
 });

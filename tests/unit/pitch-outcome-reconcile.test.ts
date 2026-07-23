@@ -4,7 +4,10 @@ import {
   computePitchOutcomePatch,
   type ReconcilablePitch,
 } from "../../src/lib/pitch-outcome-reconcile.js";
-import { makeSubmittedOutcome } from "../helpers/mock-eqrs.js";
+import {
+  makeSubmittedOutcome,
+  makePublishedArticle,
+} from "../helpers/mock-eqrs.js";
 
 const NOW = new Date("2026-07-23T12:00:00.000Z");
 
@@ -15,6 +18,9 @@ function pitch(overrides: Partial<ReconcilablePitch> = {}): ReconcilablePitch {
     publicationSource: overrides.publicationSource ?? null,
     outletDomainRating: overrides.outletDomainRating ?? null,
     backlinkAttribution: overrides.backlinkAttribution ?? null,
+    featuredArticleUrl: overrides.featuredArticleUrl ?? null,
+    articleTitle: overrides.articleTitle ?? null,
+    publishedAt: overrides.publishedAt ?? null,
   };
 }
 
@@ -37,7 +43,7 @@ describe("mapConnectivelyStatus", () => {
   });
 });
 
-describe("computePitchOutcomePatch", () => {
+describe("computePitchOutcomePatch — /submitted status + enrichment", () => {
   it("advances submitted -> published and stamps observed time", () => {
     const patch = computePitchOutcomePatch(
       pitch({ status: "submitted" }),
@@ -49,6 +55,7 @@ describe("computePitchOutcomePatch", () => {
         domainAuthority: 14,
         attribution: "DoFollow",
       }),
+      null,
       NOW
     );
     expect(patch).not.toBeNull();
@@ -63,12 +70,14 @@ describe("computePitchOutcomePatch", () => {
     const sel = computePitchOutcomePatch(
       pitch(),
       makeSubmittedOutcome({ featuredQuestionId: 1, profileId: 2, status: "Selected" }),
+      null,
       NOW
     );
     expect(sel!.status).toBe("selected");
     const ns = computePitchOutcomePatch(
       pitch(),
       makeSubmittedOutcome({ featuredQuestionId: 1, profileId: 2, status: "Not Selected" }),
+      null,
       NOW
     );
     expect(ns!.status).toBe("not_selected");
@@ -78,6 +87,7 @@ describe("computePitchOutcomePatch", () => {
     const patch = computePitchOutcomePatch(
       pitch({ status: "selected" }),
       makeSubmittedOutcome({ featuredQuestionId: 1, profileId: 2, status: "Published" }),
+      null,
       NOW
     );
     expect(patch!.status).toBe("published");
@@ -94,6 +104,7 @@ describe("computePitchOutcomePatch", () => {
         attribution: "Unknown",
         publicationSource: "ExecutiveEDGE",
       }),
+      null,
       NOW
     );
     expect(patch).not.toBeNull();
@@ -119,6 +130,7 @@ describe("computePitchOutcomePatch", () => {
         domainAuthority: 14,
         attribution: "DoFollow",
       }),
+      null,
       NOW
     );
     // status stays published, enrichment unchanged → full no-op
@@ -141,6 +153,7 @@ describe("computePitchOutcomePatch", () => {
         domainAuthority: 5,
         attribution: "Unlinked",
       }),
+      null,
       NOW
     );
     expect(patch).toBeNull();
@@ -164,6 +177,7 @@ describe("computePitchOutcomePatch", () => {
         backlinkAttribution: "DoFollow",
       }),
       outcome,
+      null,
       NOW
     );
     expect(patch).toBeNull();
@@ -185,10 +199,138 @@ describe("computePitchOutcomePatch", () => {
         domainAuthority: 14,
         attribution: "DoFollow",
       }),
+      null,
       NOW
     );
     expect(patch).not.toBeNull();
     expect(patch!.status).toBeUndefined(); // no status change
     expect(patch!.outletDomainRating).toBe(14);
+  });
+});
+
+describe("computePitchOutcomePatch — /published article fields", () => {
+  const PUB_DATE = "2026-07-22T00:00:00.000Z";
+
+  it("persists article URL / title / publish date from the /published feed", () => {
+    const patch = computePitchOutcomePatch(
+      pitch({ status: "published" }),
+      null,
+      makePublishedArticle({
+        featuredQuestionId: 1,
+        profileId: 2,
+        articleUrl: "https://brettfarmiloe.com/some-article/",
+        articleTitle: "Some Article Title",
+        publishDate: PUB_DATE,
+      }),
+      NOW
+    );
+    expect(patch).not.toBeNull();
+    expect(patch!.featuredArticleUrl).toBe(
+      "https://brettfarmiloe.com/some-article/"
+    );
+    expect(patch!.articleTitle).toBe("Some Article Title");
+    expect(patch!.publishedAt).toEqual(new Date(PUB_DATE));
+    // no /submitted outcome passed → no status touch
+    expect(patch!.status).toBeUndefined();
+  });
+
+  it("combines a /submitted status advance with /published article fields", () => {
+    const patch = computePitchOutcomePatch(
+      pitch({ status: "submitted" }),
+      makeSubmittedOutcome({
+        featuredQuestionId: 1,
+        profileId: 2,
+        status: "Published",
+        publicationSource: "Brett Farmiloe",
+        domainAuthority: 21,
+        attribution: "DoFollow",
+      }),
+      makePublishedArticle({
+        featuredQuestionId: 1,
+        profileId: 2,
+        articleUrl: "https://brettfarmiloe.com/some-article/",
+        articleTitle: "Some Article Title",
+        publishDate: PUB_DATE,
+      }),
+      NOW
+    );
+    expect(patch!.status).toBe("published");
+    expect(patch!.outcomeObservedAt).toEqual(NOW);
+    expect(patch!.publicationSource).toBe("Brett Farmiloe");
+    expect(patch!.featuredArticleUrl).toBe(
+      "https://brettfarmiloe.com/some-article/"
+    );
+    expect(patch!.publishedAt).toEqual(new Date(PUB_DATE));
+  });
+
+  it("is idempotent: identical article data re-run is a no-op", () => {
+    const patch = computePitchOutcomePatch(
+      pitch({
+        status: "published",
+        featuredArticleUrl: "https://x.com/a",
+        articleTitle: "T",
+        publishedAt: new Date(PUB_DATE),
+      }),
+      null,
+      makePublishedArticle({
+        featuredQuestionId: 1,
+        profileId: 2,
+        articleUrl: "https://x.com/a",
+        articleTitle: "T",
+        publishDate: PUB_DATE,
+      }),
+      NOW
+    );
+    expect(patch).toBeNull();
+  });
+
+  it("never clobbers an existing article URL/title with a null from the feed", () => {
+    const patch = computePitchOutcomePatch(
+      pitch({
+        status: "published",
+        featuredArticleUrl: "https://x.com/a",
+        articleTitle: "Kept Title",
+        publishedAt: new Date(PUB_DATE),
+      }),
+      null,
+      // provider omitted the title on this pass (null) — must NOT wipe it
+      makePublishedArticle({
+        featuredQuestionId: 1,
+        profileId: 2,
+        articleUrl: "https://x.com/a",
+        articleTitle: null,
+        publishDate: PUB_DATE,
+      }),
+      NOW
+    );
+    expect(patch).toBeNull();
+  });
+
+  it("fills only the missing article title (URL already stored)", () => {
+    const patch = computePitchOutcomePatch(
+      pitch({
+        status: "published",
+        featuredArticleUrl: "https://x.com/a",
+        articleTitle: null,
+        publishedAt: new Date(PUB_DATE),
+      }),
+      null,
+      makePublishedArticle({
+        featuredQuestionId: 1,
+        profileId: 2,
+        articleUrl: "https://x.com/a",
+        articleTitle: "Now We Have A Title",
+        publishDate: PUB_DATE,
+      }),
+      NOW
+    );
+    expect(patch).not.toBeNull();
+    expect(patch!.articleTitle).toBe("Now We Have A Title");
+    expect(patch!.featuredArticleUrl).toBeUndefined(); // unchanged
+    expect(patch!.publishedAt).toBeUndefined(); // unchanged
+  });
+
+  it("returns null when neither feed matches", () => {
+    expect(computePitchOutcomePatch(pitch(), null, null, NOW)).toBeNull();
   });
 });

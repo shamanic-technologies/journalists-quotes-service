@@ -6,15 +6,18 @@ import type {
   EqrsPremiumQuestionsResponse,
   EqrsSubmitResult,
   EqrsSubmittedOutcome,
+  EqrsPublishedArticle,
 } from "../../src/lib/eqrs-client.js";
 
 export interface MockEqrsState {
   opportunities: EqrsOpportunity[];
   premiumQuestions: EqrsPremiumQuestion[];
   submittedOutcomes: EqrsSubmittedOutcome[];
+  publishedArticles: EqrsPublishedArticle[];
   fetchCalls: number;
   premiumFetchCalls: number;
   submittedFetchCalls: number;
+  publishedFetchCalls: number;
   fetchSinceLog: Array<string | undefined>;
   submitCalls: Array<{
     orgId: string;
@@ -23,6 +26,7 @@ export interface MockEqrsState {
     answer: string;
   }>;
   submittedFetchImpl?: () => EqrsSubmittedOutcome[];
+  publishedFetchImpl?: () => EqrsPublishedArticle[];
   submitImpl?: (input: {
     orgId: string;
     brandId: string;
@@ -40,9 +44,11 @@ export function createMockEqrsState(
     opportunities: [],
     premiumQuestions: [],
     submittedOutcomes: [],
+    publishedArticles: [],
     fetchCalls: 0,
     premiumFetchCalls: 0,
     submittedFetchCalls: 0,
+    publishedFetchCalls: 0,
     fetchSinceLog: [],
     submitCalls: [],
     ...overrides,
@@ -94,6 +100,27 @@ export function buildMockEqrsClient(state: MockEqrsState): EqrsClient {
       if (state.submittedFetchImpl) return state.submittedFetchImpl();
       return state.submittedOutcomes;
     },
+    async fetchPublishedArticles() {
+      state.publishedFetchCalls++;
+      if (state.publishedFetchImpl) return state.publishedFetchImpl();
+      return state.publishedArticles;
+    },
+  };
+}
+
+/** Helper to build a well-formed `EqrsPublishedArticle` for tests. */
+export function makePublishedArticle(
+  overrides: Partial<EqrsPublishedArticle> & {
+    featuredQuestionId: number;
+    profileId: number;
+  }
+): EqrsPublishedArticle {
+  return {
+    featuredQuestionId: overrides.featuredQuestionId,
+    profileId: overrides.profileId,
+    articleUrl: overrides.articleUrl ?? null,
+    articleTitle: overrides.articleTitle ?? null,
+    publishDate: overrides.publishDate ?? null,
   };
 }
 
