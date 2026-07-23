@@ -86,8 +86,10 @@ export type EqrsSubmitResult =
  * exact pair JQS stores as `(featured_question_id, featured_profile_id)`.
  *
  * `status` is Connectively's verbatim label (`In Review` | `Selected` |
- * `Published` | `Not Selected`). Connectively exposes NO published article
- * URL, article title, or per-stage timestamp — only these fields.
+ * `Published` | `Not Selected`). The `/submitted` feed carries status +
+ * outlet + DR + attribution but NOT the published article's URL/title/date
+ * — those come from the separate `/published` feed (see
+ * `EqrsPublishedArticle`).
  */
 export interface EqrsSubmittedOutcome {
   featuredQuestionId: number;
@@ -97,6 +99,27 @@ export interface EqrsSubmittedOutcome {
   domainAuthority: number | null;
   attribution: string | null;
   submissionDate: string | null;
+}
+
+/**
+ * A single published-article record, decoded from EQRS's
+ * `GET /orgs/featured/published` pass-through (Connectively `/published`).
+ *
+ * This is the feed that DOES carry the placement fields absent from
+ * `/submitted`: `publishedLink` (the article URL), `articleTitle`, and
+ * `publishDate` (when the article went live). Matched onto a pitch by the
+ * same `(featuredQuestionId, profileId)` key.
+ *
+ * `articleUrl`/`publishDate` are present on ~100% of published rows;
+ * `articleTitle` on ~95% (null when Connectively omits it). Never
+ * fabricated — a missing field decodes to null.
+ */
+export interface EqrsPublishedArticle {
+  featuredQuestionId: number;
+  profileId: number;
+  articleUrl: string | null;
+  articleTitle: string | null;
+  publishDate: string | null;
 }
 
 export interface EqrsClient {
@@ -138,6 +161,19 @@ export interface EqrsClient {
     runId?: string;
     audienceId?: string;
   }): Promise<EqrsSubmittedOutcome[]>;
+
+  /**
+   * Pull the full list of Featured/Connectively PUBLISHED articles for the
+   * org (paginated internally). Used by the pitch-outcome reconcile to
+   * persist the article URL/title/publish-date onto published pitches.
+   * Throws EqrsServiceError on a non-2xx from EQRS. NO silent fallback.
+   */
+  fetchPublishedArticles(args: {
+    orgId: string;
+    userId?: string;
+    runId?: string;
+    audienceId?: string;
+  }): Promise<EqrsPublishedArticle[]>;
 }
 
 export interface EqrsClientOptions {
@@ -324,6 +360,75 @@ export function createEqrsClient(
       }
 
       return outcomes;
+    },
+
+    async fetchPublishedArticles(args) {
+      const { baseUrl, apiKey } = requireEnv();
+      const headers: Record<string, string> = {
+        "x-api-key": apiKey,
+        "x-org-id": args.orgId,
+      };
+      if (args.userId) headers["x-user-id"] = args.userId;
+      if (args.runId) headers["x-run-id"] = args.runId;
+      if (args.audienceId) headers["x-audience-id"] = args.audienceId;
+
+      const PAGE_SIZE = 100;
+      const MAX_PAGES = 100; // safety cap: 10k published articles
+      const articles: EqrsPublishedArticle[] = [];
+
+      for (let page = 1; page <= MAX_PAGES; page++) {
+        const response = await fetchImpl(
+          `${baseUrl}/orgs/featured/published?page=${page}`,
+          { method: "GET", headers }
+        );
+        if (!response.ok) {
+          const body = await response.text();
+          throw new EqrsServiceError(
+            `EQRS GET /orgs/featured/published failed (${response.status}): ${body}`,
+            response.status,
+            body
+          );
+        }
+        const payload = (await response.json()) as Record<string, unknown>;
+        // EQRS is a pass-through of Connectively `/published`, which returns
+        // `{ published: [...] }`. Accept `data` too (defensive) but fail loud
+        // if neither is an array — never a silent empty.
+        const rawList =
+          (payload.published as unknown) ?? (payload.data as unknown);
+        if (!Array.isArray(rawList)) {
+          throw new EqrsServiceError(
+            `EQRS GET /orgs/featured/published returned unexpected shape (expected { published: [...] }): ${JSON.stringify(
+              payload
+            ).slice(0, 200)}`,
+            502
+          );
+        }
+        for (const raw of rawList as Array<Record<string, unknown>>) {
+          const featuredQuestionId = raw.featuredQuestionId;
+          const profileId = raw.profileId;
+          // A published record with no (question, profile) pair cannot be
+          // matched to a pitch — skip it (not fabricating a key).
+          if (
+            typeof featuredQuestionId !== "number" ||
+            typeof profileId !== "number"
+          ) {
+            continue;
+          }
+          articles.push({
+            featuredQuestionId,
+            profileId,
+            articleUrl:
+              typeof raw.publishedLink === "string" ? raw.publishedLink : null,
+            articleTitle:
+              typeof raw.articleTitle === "string" ? raw.articleTitle : null,
+            publishDate:
+              typeof raw.publishDate === "string" ? raw.publishDate : null,
+          });
+        }
+        if (rawList.length < PAGE_SIZE) break;
+      }
+
+      return articles;
     },
   };
 }

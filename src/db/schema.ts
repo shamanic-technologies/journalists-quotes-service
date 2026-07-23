@@ -240,21 +240,32 @@ export const quotePitches = pgTable(
     outboundMessageId: text("outbound_message_id"),
     replyInThreadMessageId: text("reply_in_thread_message_id"),
     bounceStatus: text("bounce_status"),
+    // Published article URL. Populated by reconcilePitchOutcomes from
+    // Connectively's `/published` list (via EQRS `/orgs/featured/published`),
+    // matched on (featured_question_id, featured_profile_id). Connectively
+    // exposes this as `publishedLink` — a real, verbatim URL (never
+    // fabricated); null until the placement is published + observed.
     featuredArticleUrl: text("featured_article_url"),
+    // Published article title (Connectively `articleTitle`). ~95% of
+    // published rows carry it; null when the provider omits it.
+    articleTitle: text("article_title"),
+    // When the article went LIVE (Connectively `publishDate`) — a real
+    // provider timestamp, distinct from `outcome_observed_at` (OUR observation
+    // time). Null until published + observed.
+    publishedAt: timestamp("published_at", { withTimezone: true }),
     // ---- Featured/Connectively publication-outcome reconcile fields ----
     // Populated by reconcilePitchOutcomes from EQRS's Connectively
-    // `/submitted` pass-through, matched on (featured_question_id,
-    // featured_profile_id). `status` advances submitted → selected /
-    // published / not_selected; these columns carry the press-value
-    // metadata Connectively exposes alongside the outcome.
+    // pass-throughs, matched on (featured_question_id, featured_profile_id).
+    // `status` advances submitted → selected / published / not_selected from
+    // the `/submitted` feed; these columns carry the press-value metadata.
     //
-    // NOTE: Connectively's `/submitted` payload does NOT expose the
-    // published article URL, the article title, or a per-stage
-    // (selected/published) timestamp — only the current status +
-    // outlet + DR + backlink attribution. So `featured_article_url`
-    // stays null from this path (no fabrication), and
-    // `outcome_observed_at` records when WE observed the outcome, not
-    // Connectively's own stage time (which is not in the API). See #100.
+    // The `/submitted` feed carries status + outlet + DR + backlink
+    // attribution but NOT the article URL/title/publish-date — those come
+    // from the separate `/published` feed (see featured_article_url /
+    // article_title / published_at above). `outcome_observed_at` records
+    // when WE observed the status transition, not Connectively's own stage
+    // time (the `/submitted` feed has no per-stage timestamp). See #100 for
+    // the DR/backlink-attribution enrichment roadmap.
     outcomeObservedAt: timestamp("outcome_observed_at", {
       withTimezone: true,
     }),

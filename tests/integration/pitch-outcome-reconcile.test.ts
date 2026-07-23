@@ -18,6 +18,7 @@ import {
   buildMockEqrsClient,
   createMockEqrsState,
   makeSubmittedOutcome,
+  makePublishedArticle,
   type MockEqrsState,
 } from "../helpers/mock-eqrs.js";
 import { EqrsServiceError } from "../../src/lib/eqrs-client.js";
@@ -121,8 +122,98 @@ describe("pitch-outcome reconcile", () => {
     expect(row.outletDomainRating).toBe(14);
     expect(row.backlinkAttribution).toBe("DoFollow");
     expect(row.outcomeObservedAt).not.toBeNull();
-    // Never fabricate the article URL (Connectively does not expose it).
+    // No /published match in this state → article URL stays null (never
+    // fabricated). The URL comes from the separate /published feed, covered
+    // by the "persists the published article URL" test below.
     expect(row.featuredArticleUrl).toBeNull();
+  });
+
+  it("persists the published article URL / title / publish date from /published", async () => {
+    const pitch = await seedFeaturedPitch({
+      featuredQuestionId: QID,
+      featuredProfileId: PROFILE,
+      status: "submitted",
+    });
+    const state = createMockEqrsState({
+      submittedOutcomes: [
+        makeSubmittedOutcome({
+          featuredQuestionId: QID,
+          profileId: PROFILE,
+          status: "Published",
+          publicationSource: "Brett Farmiloe",
+          domainAuthority: 21,
+          attribution: "DoFollow",
+        }),
+      ],
+      publishedArticles: [
+        makePublishedArticle({
+          featuredQuestionId: QID,
+          profileId: PROFILE,
+          articleUrl: "https://brettfarmiloe.com/some-article/",
+          articleTitle: "Some Great Article",
+          publishDate: "2026-07-22T00:00:00.000Z",
+        }),
+      ],
+    });
+    const app = appWith(state);
+
+    const res = await request(app)
+      .post("/orgs/quote-pitches/reconcile-outcomes")
+      .set(AUTH_HEADERS);
+    expect(res.status).toBe(200);
+    expect(res.body.updated).toBe(1);
+    expect(res.body.advanced.published).toBe(1);
+    expect(res.body.publishedFetched).toBe(1);
+
+    const [row] = await db
+      .select()
+      .from(quotePitches)
+      .where(eq(quotePitches.id, pitch.id));
+    expect(row.status).toBe("published");
+    expect(row.featuredArticleUrl).toBe(
+      "https://brettfarmiloe.com/some-article/"
+    );
+    expect(row.articleTitle).toBe("Some Great Article");
+    expect(row.publishedAt?.toISOString()).toBe("2026-07-22T00:00:00.000Z");
+
+    // Idempotent: a re-run writes nothing.
+    const second = await request(app)
+      .post("/orgs/quote-pitches/reconcile-outcomes")
+      .set(AUTH_HEADERS);
+    expect(second.body.updated).toBe(0);
+  });
+
+  it("enriches the article URL even when a /submitted outcome is absent", async () => {
+    // A pitch already marked published (e.g. via a prior /submitted pass);
+    // this run only supplies the /published article, no /submitted outcome.
+    const pitch = await seedFeaturedPitch({
+      featuredQuestionId: QID,
+      featuredProfileId: PROFILE,
+      status: "published",
+    });
+    const state = createMockEqrsState({
+      publishedArticles: [
+        makePublishedArticle({
+          featuredQuestionId: QID,
+          profileId: PROFILE,
+          articleUrl: "https://x.com/a",
+          publishDate: "2026-07-22T00:00:00.000Z",
+        }),
+      ],
+    });
+    const app = appWith(state);
+
+    const res = await request(app)
+      .post("/orgs/quote-pitches/reconcile-outcomes")
+      .set(AUTH_HEADERS);
+    expect(res.body.updated).toBe(1);
+    expect(res.body.advanced.published).toBe(0); // no status change
+
+    const [row] = await db
+      .select()
+      .from(quotePitches)
+      .where(eq(quotePitches.id, pitch.id));
+    expect(row.featuredArticleUrl).toBe("https://x.com/a");
   });
 
   it("is idempotent: a second reconcile updates nothing", async () => {
@@ -239,5 +330,8 @@ describe("pitch-outcome reconcile", () => {
     expect(p).toHaveProperty("publicationSource");
     expect(p).toHaveProperty("outletDomainRating");
     expect(p).toHaveProperty("backlinkAttribution");
+    expect(p).toHaveProperty("featuredArticleUrl");
+    expect(p).toHaveProperty("articleTitle");
+    expect(p).toHaveProperty("publishedAt");
   });
 });
