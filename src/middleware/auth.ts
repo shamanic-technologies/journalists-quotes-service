@@ -85,6 +85,14 @@ export function requireOrgId(
   next();
 }
 
+// Bound the pre-handler child-run creation so a cold/slow runs-service (Neon
+// scale-to-zero + Railway cold-start) can never hang a request for the far
+// upstream's whole client-timeout window (~60s). Applies to the WRITE path
+// where the call is awaited; reads don't await at all (see below).
+const RUNS_CREATE_TIMEOUT_MS = Number(
+  process.env.RUNS_CREATE_TIMEOUT_MS ?? "3000"
+);
+
 export async function withRunTracking(
   req: Request,
   res: Response,
@@ -97,6 +105,56 @@ export async function withRunTracking(
   }
 
   const taskName = `${req.method} ${req.path}`;
+
+  // Pure GET reads declare NO cost — they must NEVER be gated on synchronous
+  // run/cost tracking. Create the child run in the BACKGROUND (best-effort
+  // attribution) and let the handler proceed immediately, so the read returns
+  // promptly regardless of runs-service / compute cold-start state. If the run
+  // resolves, close it on (or after) response finish; if runs-service is
+  // cold/slow/unreachable, log and serve the read anyway (fail-open).
+  if (req.method === "GET") {
+    createChildRun(
+      {
+        parentRunId: req.parentRunId,
+        serviceName: "journalists-quotes-service",
+        taskName,
+      },
+      req.orgId,
+      req.userId,
+      req.audienceId,
+      req.campaignId,
+      req.brandId,
+      req.featureSlug,
+      RUNS_CREATE_TIMEOUT_MS
+    )
+      .then((run) => {
+        req.runId = run.id;
+        const closeIt = () => {
+          const status = res.statusCode < 400 ? "completed" : "failed";
+          closeRun(run.id, status, req.orgId, req.userId).catch((err) => {
+            console.error(
+              "[journalists-quotes-service] failed to close run:",
+              err
+            );
+          });
+        };
+        if (res.writableEnded) closeIt();
+        else res.on("finish", closeIt);
+      })
+      .catch((err) => {
+        console.error(
+          "[journalists-quotes-service] run-tracking skipped for read (runs-service cold/unavailable):",
+          err
+        );
+      });
+
+    next();
+    return;
+  }
+
+  // Write/spend path: run + cost declaration is load-bearing → fail loud (502)
+  // if it can't be recorded, but bound the call so a cold runs-service returns
+  // a fast 502 (retryable) instead of hanging for the full client timeout.
   try {
     const run = await createChildRun(
       {
@@ -109,7 +167,8 @@ export async function withRunTracking(
       req.audienceId,
       req.campaignId,
       req.brandId,
-      req.featureSlug
+      req.featureSlug,
+      RUNS_CREATE_TIMEOUT_MS
     );
     req.runId = run.id;
   } catch (err) {

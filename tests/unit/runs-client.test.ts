@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { addCosts } from "../../src/lib/runs-client.js";
+import { addCosts, createChildRun } from "../../src/lib/runs-client.js";
 
 const RS_URL = "http://runs.test";
 const RS_KEY = "test-runs-key";
@@ -72,6 +72,32 @@ describe("runs-client.addCosts", () => {
         },
       ],
     });
+  });
+
+  it("createChildRun aborts and rejects with a timeout error when runs-service hangs", async () => {
+    // Simulate a cold runs-service: fetch never resolves until the abort
+    // signal fires, then rejects like the real fetch does on abort.
+    fetchSpy.mockImplementation((_url, init) => {
+      return new Promise((_resolve, reject) => {
+        const signal = (init as RequestInit).signal;
+        signal?.addEventListener("abort", () =>
+          reject(new DOMException("The operation was aborted.", "AbortError"))
+        );
+      }) as Promise<Response>;
+    });
+
+    await expect(
+      createChildRun(
+        { serviceName: "journalists-quotes-service", taskName: "GET /x" },
+        "org-1",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        20
+      )
+    ).rejects.toThrow(/timed out after 20ms/);
   });
 
   it("throws on non-2xx status", async () => {

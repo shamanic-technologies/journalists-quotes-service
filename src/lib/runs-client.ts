@@ -20,7 +20,11 @@ export async function createChildRun(
   audienceId?: string,
   campaignId?: string,
   brandId?: string,
-  featureSlug?: string
+  featureSlug?: string,
+  // Bound the call so a cold/slow runs-service (Neon scale-to-zero + Railway
+  // cold-start) can never hang the caller indefinitely. On timeout the fetch
+  // aborts and rejects; callers decide fail-open (reads) vs fail-loud (writes).
+  timeoutMs?: number
 ): Promise<CreateRunResponse> {
   const { url, apiKey } = getRunsConfig();
 
@@ -42,14 +46,33 @@ export async function createChildRun(
   if (brandId) headers["x-brand-id"] = brandId;
   if (featureSlug) headers["x-feature-slug"] = featureSlug;
 
-  const response = await fetch(`${url}/v1/runs`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      serviceName: request.serviceName,
-      taskName: request.taskName,
-    }),
-  });
+  const controller =
+    timeoutMs && timeoutMs > 0 ? new AbortController() : undefined;
+  const timer = controller
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : undefined;
+
+  let response: Response;
+  try {
+    response = await fetch(`${url}/v1/runs`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        serviceName: request.serviceName,
+        taskName: request.taskName,
+      }),
+      signal: controller?.signal,
+    });
+  } catch (err) {
+    if (controller?.signal.aborted) {
+      throw new Error(
+        `Runs-service POST /v1/runs timed out after ${timeoutMs}ms`
+      );
+    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 
   if (!response.ok) {
     const body = await response.text();
