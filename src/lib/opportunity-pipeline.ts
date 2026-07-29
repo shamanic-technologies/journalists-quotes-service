@@ -17,6 +17,7 @@ import { judgeRelevance } from "./judge-client.js";
 import { extractBrandContext } from "./brand-client.js";
 import { SHARED_EMAIL_ORG_ID } from "./inbound/process.js";
 import { computeFingerprint } from "./cluster/fingerprint.js";
+import { chunkRows } from "./db-chunk.js";
 
 export class EqrsServiceError extends Error {
   constructor(message: string) {
@@ -209,31 +210,42 @@ export async function ingestFeaturedToSilver(args: {
     const uniqueByFingerprint = Array.from(preparedByFingerprint.values());
 
     // 1. Bulk upsert Gold clusters by fingerprint (touch last_seen_at).
-    await db
-      .insert(quoteOpportunities)
-      .values(
-        uniqueByFingerprint.map((r) => ({
-          fingerprint: r.fingerprint,
-          canonicalText: r.text,
-          canonicalOutlet: r.outlet,
-          canonicalDeadline: r.deadline,
-          clusterMethod: "fingerprint" as const,
-        }))
-      )
-      .onConflictDoUpdate({
-        target: quoteOpportunities.fingerprint,
-        set: { lastSeenAt: drizzleSql`now()` },
-      });
+    //    Chunked: one bind parameter per column per row, and a single
+    //    statement is capped at 65,534 (see `db-chunk.ts`). Dedupe
+    //    already ran across the WHOLE batch above, so no two chunks can
+    //    collide on the same fingerprint within one statement.
+    for (const batch of chunkRows(uniqueByFingerprint)) {
+      await db
+        .insert(quoteOpportunities)
+        .values(
+          batch.map((r) => ({
+            fingerprint: r.fingerprint,
+            canonicalText: r.text,
+            canonicalOutlet: r.outlet,
+            canonicalDeadline: r.deadline,
+            clusterMethod: "fingerprint" as const,
+          }))
+        )
+        .onConflictDoUpdate({
+          target: quoteOpportunities.fingerprint,
+          set: { lastSeenAt: drizzleSql`now()` },
+        });
+    }
 
-    // 2. Resolve cluster ids by fingerprint.
+    // 2. Resolve cluster ids by fingerprint (chunked — `inArray` binds
+    //    one parameter per element).
     const fingerprints = uniqueByFingerprint.map((r) => r.fingerprint);
-    const clusterRows = await db
-      .select({
-        id: quoteOpportunities.id,
-        fingerprint: quoteOpportunities.fingerprint,
-      })
-      .from(quoteOpportunities)
-      .where(inArray(quoteOpportunities.fingerprint, fingerprints));
+    const clusterRows: { id: string; fingerprint: string }[] = [];
+    for (const batch of chunkRows(fingerprints)) {
+      const rows = await db
+        .select({
+          id: quoteOpportunities.id,
+          fingerprint: quoteOpportunities.fingerprint,
+        })
+        .from(quoteOpportunities)
+        .where(inArray(quoteOpportunities.fingerprint, batch));
+      clusterRows.push(...rows);
+    }
     const clusterIdByFingerprint = new Map(
       clusterRows.map((c) => [c.fingerprint, c.id])
     );
@@ -279,43 +291,45 @@ export async function ingestFeaturedToSilver(args: {
       // created_at, fetched_at on conflict — those are
       // identity/provenance fields and must not be mutated by a
       // re-ingest.
-      const silverInserted = await db
-        .insert(providerQuoteRequests)
-        .values(
-          uniqueByExternalId.map((r) => ({
-            provider: "featured",
-            ingestionChannel: "api" as const,
-            externalId: r.o.externalId,
-            featuredQuestionId: r.o.featuredQuestionId,
-            mediaOutlet: r.outlet,
-            opportunityText: r.text,
-            pitchUrl: r.o.pitchUrl ?? null,
-            deadline: r.deadline,
-            raw: null,
-            quoteOpportunityId: clusterIdByFingerprint.get(r.fingerprint)!,
-            isCanonical: false,
-            fingerprint: r.fingerprint,
-            orgId,
-          }))
-        )
-        .onConflictDoUpdate({
-          target: [
-            providerQuoteRequests.provider,
-            providerQuoteRequests.ingestionChannel,
-            providerQuoteRequests.externalId,
-          ],
-          set: {
-            quoteOpportunityId: drizzleSql`excluded.quote_opportunity_id`,
-            fingerprint: drizzleSql`excluded.fingerprint`,
-            opportunityText: drizzleSql`excluded.opportunity_text`,
-            mediaOutlet: drizzleSql`excluded.media_outlet`,
-            deadline: drizzleSql`excluded.deadline`,
-            pitchUrl: drizzleSql`excluded.pitch_url`,
-            updatedAt: drizzleSql`now()`,
-          },
-        })
-        .returning({ id: providerQuoteRequests.id });
-      newSilverCount = silverInserted.length;
+      for (const batch of chunkRows(uniqueByExternalId)) {
+        const silverInserted = await db
+          .insert(providerQuoteRequests)
+          .values(
+            batch.map((r) => ({
+              provider: "featured",
+              ingestionChannel: "api" as const,
+              externalId: r.o.externalId,
+              featuredQuestionId: r.o.featuredQuestionId,
+              mediaOutlet: r.outlet,
+              opportunityText: r.text,
+              pitchUrl: r.o.pitchUrl ?? null,
+              deadline: r.deadline,
+              raw: null,
+              quoteOpportunityId: clusterIdByFingerprint.get(r.fingerprint)!,
+              isCanonical: false,
+              fingerprint: r.fingerprint,
+              orgId,
+            }))
+          )
+          .onConflictDoUpdate({
+            target: [
+              providerQuoteRequests.provider,
+              providerQuoteRequests.ingestionChannel,
+              providerQuoteRequests.externalId,
+            ],
+            set: {
+              quoteOpportunityId: drizzleSql`excluded.quote_opportunity_id`,
+              fingerprint: drizzleSql`excluded.fingerprint`,
+              opportunityText: drizzleSql`excluded.opportunity_text`,
+              mediaOutlet: drizzleSql`excluded.media_outlet`,
+              deadline: drizzleSql`excluded.deadline`,
+              pitchUrl: drizzleSql`excluded.pitch_url`,
+              updatedAt: drizzleSql`now()`,
+            },
+          })
+          .returning({ id: providerQuoteRequests.id });
+        newSilverCount += silverInserted.length;
+      }
     }
   }
 
@@ -424,31 +438,39 @@ export async function ingestPremiumQuestionsToSilver(args: {
     const uniqueByFingerprint = Array.from(preparedByFingerprint.values());
 
     // 1. Bulk upsert Gold clusters by fingerprint (touch last_seen_at).
-    await db
-      .insert(quoteOpportunities)
-      .values(
-        uniqueByFingerprint.map((r) => ({
-          fingerprint: r.fingerprint,
-          canonicalText: r.text,
-          canonicalOutlet: r.outlet,
-          canonicalDeadline: r.deadline,
-          clusterMethod: "fingerprint" as const,
-        }))
-      )
-      .onConflictDoUpdate({
-        target: quoteOpportunities.fingerprint,
-        set: { lastSeenAt: drizzleSql`now()` },
-      });
+    //    Chunked — see `db-chunk.ts` for the bind-parameter ceiling.
+    for (const batch of chunkRows(uniqueByFingerprint)) {
+      await db
+        .insert(quoteOpportunities)
+        .values(
+          batch.map((r) => ({
+            fingerprint: r.fingerprint,
+            canonicalText: r.text,
+            canonicalOutlet: r.outlet,
+            canonicalDeadline: r.deadline,
+            clusterMethod: "fingerprint" as const,
+          }))
+        )
+        .onConflictDoUpdate({
+          target: quoteOpportunities.fingerprint,
+          set: { lastSeenAt: drizzleSql`now()` },
+        });
+    }
 
-    // 2. Resolve cluster ids by fingerprint.
+    // 2. Resolve cluster ids by fingerprint (chunked — `inArray` binds
+    //    one parameter per element).
     const fingerprints = uniqueByFingerprint.map((r) => r.fingerprint);
-    const clusterRows = await db
-      .select({
-        id: quoteOpportunities.id,
-        fingerprint: quoteOpportunities.fingerprint,
-      })
-      .from(quoteOpportunities)
-      .where(inArray(quoteOpportunities.fingerprint, fingerprints));
+    const clusterRows: { id: string; fingerprint: string }[] = [];
+    for (const batch of chunkRows(fingerprints)) {
+      const rows = await db
+        .select({
+          id: quoteOpportunities.id,
+          fingerprint: quoteOpportunities.fingerprint,
+        })
+        .from(quoteOpportunities)
+        .where(inArray(quoteOpportunities.fingerprint, batch));
+      clusterRows.push(...rows);
+    }
     const clusterIdByFingerprint = new Map(
       clusterRows.map((c) => [c.fingerprint, c.id])
     );
@@ -467,44 +489,46 @@ export async function ingestPremiumQuestionsToSilver(args: {
     const uniqueByExternalId = Array.from(silverRowsByExternalId.values());
 
     if (uniqueByExternalId.length > 0) {
-      const silverInserted = await db
-        .insert(providerQuoteRequests)
-        .values(
-          uniqueByExternalId.map((r) => ({
-            provider: "featured",
-            ingestionChannel: "api" as const,
-            externalId: r.externalId,
-            featuredQuestionId: r.q.featuredQuestionId,
-            mediaOutlet: r.outlet,
-            opportunityText: r.text,
-            pitchUrl: r.q.pitchUrl ?? null,
-            deadline: r.deadline,
-            raw: null,
-            quoteOpportunityId: clusterIdByFingerprint.get(r.fingerprint)!,
-            isCanonical: false,
-            fingerprint: r.fingerprint,
-            orgId,
-          }))
-        )
-        .onConflictDoUpdate({
-          target: [
-            providerQuoteRequests.provider,
-            providerQuoteRequests.ingestionChannel,
-            providerQuoteRequests.externalId,
-          ],
-          set: {
-            quoteOpportunityId: drizzleSql`excluded.quote_opportunity_id`,
-            fingerprint: drizzleSql`excluded.fingerprint`,
-            opportunityText: drizzleSql`excluded.opportunity_text`,
-            mediaOutlet: drizzleSql`excluded.media_outlet`,
-            deadline: drizzleSql`excluded.deadline`,
-            pitchUrl: drizzleSql`excluded.pitch_url`,
-            featuredQuestionId: drizzleSql`excluded.featured_question_id`,
-            updatedAt: drizzleSql`now()`,
-          },
-        })
-        .returning({ id: providerQuoteRequests.id });
-      newSilverCount = silverInserted.length;
+      for (const batch of chunkRows(uniqueByExternalId)) {
+        const silverInserted = await db
+          .insert(providerQuoteRequests)
+          .values(
+            batch.map((r) => ({
+              provider: "featured",
+              ingestionChannel: "api" as const,
+              externalId: r.externalId,
+              featuredQuestionId: r.q.featuredQuestionId,
+              mediaOutlet: r.outlet,
+              opportunityText: r.text,
+              pitchUrl: r.q.pitchUrl ?? null,
+              deadline: r.deadline,
+              raw: null,
+              quoteOpportunityId: clusterIdByFingerprint.get(r.fingerprint)!,
+              isCanonical: false,
+              fingerprint: r.fingerprint,
+              orgId,
+            }))
+          )
+          .onConflictDoUpdate({
+            target: [
+              providerQuoteRequests.provider,
+              providerQuoteRequests.ingestionChannel,
+              providerQuoteRequests.externalId,
+            ],
+            set: {
+              quoteOpportunityId: drizzleSql`excluded.quote_opportunity_id`,
+              fingerprint: drizzleSql`excluded.fingerprint`,
+              opportunityText: drizzleSql`excluded.opportunity_text`,
+              mediaOutlet: drizzleSql`excluded.media_outlet`,
+              deadline: drizzleSql`excluded.deadline`,
+              pitchUrl: drizzleSql`excluded.pitch_url`,
+              featuredQuestionId: drizzleSql`excluded.featured_question_id`,
+              updatedAt: drizzleSql`now()`,
+            },
+          })
+          .returning({ id: providerQuoteRequests.id });
+        newSilverCount += silverInserted.length;
+      }
     }
   }
 
