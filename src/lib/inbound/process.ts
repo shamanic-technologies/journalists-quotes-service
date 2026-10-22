@@ -5,6 +5,7 @@ import { PostmarkInboundWebhookSchema } from "../../schemas.js";
 import { getParser } from "./parsers/index.js";
 import { computeFingerprint } from "../cluster/fingerprint.js";
 import { attachOrCreateCluster } from "../cluster/attach.js";
+import { errorMessage } from "../db-error.js";
 
 /**
  * Sentinel org_id for email-sourced opportunities. The same HARO query is
@@ -124,7 +125,7 @@ export async function processInboundEmails(
         .where(eq(inboundEmails.id, email.id));
       parsed++;
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorMessage(err, String(err));
       console.error(
         `[journalists-quotes-service] failed to parse inbound email ${email.id}: ${message}`
       );

@@ -26,6 +26,7 @@ import {
   BrandIdsHeaderError,
   parseBrandIdsHeader,
 } from "../lib/brand-ids.js";
+import { errorMessage } from "../lib/db-error.js";
 
 const PARAMS_SCHEMA = z.object({ id: z.string().uuid() });
 
@@ -396,7 +397,7 @@ async function handleFeaturedReply(args: {
       res.status(402).json({ error: err.message });
       return;
     }
-    const message = (err as Error).message;
+    const message = errorMessage(err);
     // A dead Featured question (404 "Question not found") is terminal, not a
     // retryable error — mark it blocking so it is never re-served.
     if (isDeadQuestionError(message)) {
@@ -618,7 +619,7 @@ async function handleEmailReply(args: {
       });
       return;
     }
-    res.status(502).json({ error: (err as Error).message });
+    res.status(502).json({ error: errorMessage(err) });
     return;
   }
 
