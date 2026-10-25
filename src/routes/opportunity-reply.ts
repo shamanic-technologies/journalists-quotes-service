@@ -28,11 +28,11 @@ import {
 } from "../lib/brand-ids.js";
 import { errorMessage } from "../lib/db-error.js";
 
-const PARAMS_SCHEMA = z.object({ id: z.string().uuid() });
+const PARAMS_SCHEMA = z.object({ id: z.guid() });
 
 const BODY_SCHEMA = z.object({
   pitchContent: z.string().min(1),
-  campaignId: z.string().uuid().optional(),
+  campaignId: z.guid().optional(),
   subject: z.string().optional(),
 });
 

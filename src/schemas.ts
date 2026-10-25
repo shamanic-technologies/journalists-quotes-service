@@ -6,6 +6,11 @@ import {
 
 extendZodWithOpenApi(z);
 
+// zod 4's z.uuid() only accepts RFC 9562 variants; z.guid() keeps zod 3's
+// permissive 8-4-4-4-12 hex check (same runtime behaviour as before the
+// upgrade), and the explicit format keeps the served openapi `format: uuid`.
+const uuid = () => z.guid().openapi({ format: "uuid" });
+
 export const registry = new OpenAPIRegistry();
 
 const apiKeyAuth = registry.registerComponent("securitySchemes", "ApiKeyAuth", {
@@ -22,12 +27,12 @@ export const ErrorResponseSchema = z
 
 export const QuoteRequestSchema = z
   .object({
-    id: z.string().uuid(),
+    id: uuid(),
     provider: z.string(),
     ingestionChannel: z.string(),
     externalId: z.string(),
     featuredQuestionId: z.number().int().nullable(),
-    inboundEmailId: z.string().uuid().nullable(),
+    inboundEmailId: uuid().nullable(),
     mediaOutlet: z.string().nullable(),
     journalistName: z.string().nullable(),
     journalistEmail: z.string().nullable(),
@@ -37,17 +42,17 @@ export const QuoteRequestSchema = z
     pitchUrl: z.string().nullable(),
     deadline: z.string().nullable(),
     fetchedAt: z.string(),
-    quoteOpportunityId: z.string().uuid().nullable(),
+    quoteOpportunityId: uuid().nullable(),
     isCanonical: z.boolean(),
     fingerprint: z.string().nullable(),
-    orgId: z.string().uuid(),
+    orgId: uuid(),
     createdAt: z.string(),
     updatedAt: z.string(),
   })
   .openapi("ProviderQuoteRequest");
 
 export const QuoteRequestListQuerySchema = z.object({
-  campaign_id: z.string().uuid().optional(),
+  campaign_id: uuid().optional(),
   provider: z.string().optional(),
   ingestion_channel: z.string().optional(),
   limit: z.string().optional(),
@@ -56,7 +61,7 @@ export const QuoteRequestListQuerySchema = z.object({
 
 export const QuoteOpportunitySchema = z
   .object({
-    id: z.string().uuid(),
+    id: uuid(),
     fingerprint: z.string(),
     canonicalText: z.string(),
     canonicalOutlet: z.string().nullable(),
@@ -70,7 +75,7 @@ export const QuoteOpportunitySchema = z
 
 export const InboundEmailSchema = z
   .object({
-    id: z.string().uuid(),
+    id: uuid(),
     messageId: z.string(),
     fromEmail: z.string(),
     toEmail: z.string(),
@@ -96,17 +101,17 @@ export const QuoteRequestStatsSchema = z
 
 export const QuotePitchSchema = z
   .object({
-    id: z.string().uuid(),
-    quoteRequestId: z.string().uuid(),
-    quoteOpportunityId: z.string().uuid().nullable(),
+    id: uuid(),
+    quoteRequestId: uuid(),
+    quoteOpportunityId: uuid().nullable(),
     featuredQuestionId: z.number().int().nullable(),
     featuredProfileId: z.number().int().nullable(),
-    campaignId: z.string().uuid().nullable(),
-    brandIds: z.array(z.string().uuid()),
+    campaignId: uuid().nullable(),
+    brandIds: z.array(uuid()),
     draft: z.string().nullable(),
     pitchCharCount: z.number().int().nullable(),
     pitchAttempts: z.number().int().nullable(),
-    contentGenRunId: z.string().uuid().nullable(),
+    contentGenRunId: uuid().nullable(),
     submittedAt: z.string().nullable(),
     status: z.enum([
       "drafted",
@@ -143,9 +148,9 @@ export const QuotePitchSchema = z
     backlinkAttribution: z.string().nullable(),
     error: z.string().nullable(),
     errorDetails: z.unknown().nullable(),
-    parentRunId: z.string().uuid().nullable(),
-    runId: z.string().uuid().nullable(),
-    orgId: z.string().uuid(),
+    parentRunId: uuid().nullable(),
+    runId: uuid().nullable(),
+    orgId: uuid(),
     createdAt: z.string(),
     updatedAt: z.string(),
   })
@@ -165,7 +170,7 @@ export const ReconcileOutcomesResponseSchema = z
   .openapi("ReconcileOutcomesResponse");
 
 export const QuotePitchListQuerySchema = z.object({
-  campaign_id: z.string().uuid().optional(),
+  campaign_id: uuid().optional(),
   status: z
     .enum([
       "drafted",
@@ -191,14 +196,14 @@ export const OpportunityDiscoverResponseSchema = z
   .object({
     scored: z.number().int(),
     exhausted: z.boolean(),
-    brandIds: z.array(z.string().uuid()),
+    brandIds: z.array(uuid()),
   })
   .openapi("OpportunityDiscoverResponse");
 
 export const OpportunityReplyRequestSchema = z
   .object({
     pitchContent: z.string().min(1),
-    campaignId: z.string().uuid().optional(),
+    campaignId: uuid().optional(),
     subject: z.string().optional(),
   })
   .openapi("OpportunityReplyRequest");
@@ -223,7 +228,7 @@ export const PitchStatusSchema = z
 
 export const FullQuoteOpportunitySchema = z
   .object({
-    opportunityId: z.string().uuid(),
+    opportunityId: uuid(),
     provider: z.string(),
     ingestionChannel: z.string(),
     featuredQuestionId: z.number().int().nullable(),
@@ -249,7 +254,7 @@ export const OpportunityNextResponseSchema = z
     z.object({
       found: z.literal(true),
       opportunity: FullQuoteOpportunitySchema,
-      brandIds: z.array(z.string().uuid()),
+      brandIds: z.array(uuid()),
     }),
   ])
   .openapi("OpportunityNextResponse");
@@ -259,7 +264,7 @@ export const OpportunityRankedResponseSchema = z
     status: z.literal("ok"),
     opportunities: z.array(RankedOpportunitySchema),
     total: z.number().int(),
-    brandIds: z.array(z.string().uuid()),
+    brandIds: z.array(uuid()),
   })
   .openapi("OpportunityRankedResponse");
 
@@ -271,7 +276,7 @@ export const OpportunityStatsResponseSchema = z
     pitchedBlocking: z.number().int(),
     expiredCount: z.number().int(),
     bestEligibleScore: z.number().nullable(),
-    brandIds: z.array(z.string().uuid()),
+    brandIds: z.array(uuid()),
   })
   .openapi("OpportunityStatsResponse");
 
@@ -283,7 +288,7 @@ export const OpportunityReplyResponseSchema = z
       "rate_limited",
       "error",
     ]),
-    pitchId: z.string().uuid().optional(),
+    pitchId: uuid().optional(),
     deliveryMethod: z.enum(["featured_api", "email_reply"]).optional(),
     outboundMessageId: z.string().nullable().optional(),
     featuredQuestionId: z.number().int().nullable().optional(),
@@ -333,7 +338,7 @@ export type PostmarkInboundWebhook = z.infer<typeof PostmarkInboundWebhookSchema
 export const InboundEmailAcceptedResponseSchema = z
   .object({
     accepted: z.boolean(),
-    inboundEmailId: z.string().uuid().optional(),
+    inboundEmailId: uuid().optional(),
     deduplicated: z.boolean().optional(),
   })
   .openapi("InboundEmailAcceptedResponse");
@@ -341,7 +346,7 @@ export const InboundEmailAcceptedResponseSchema = z
 // ==================== Path Registrations ====================
 
 const orgHeaders = z.object({
-  "x-org-id": z.string().uuid(),
+  "x-org-id": uuid(),
   "x-brand-id": z
     .string()
     .describe(
@@ -350,7 +355,7 @@ const orgHeaders = z.object({
 });
 
 const orgHeadersOptionalBrand = z.object({
-  "x-org-id": z.string().uuid(),
+  "x-org-id": uuid(),
 });
 
 // Mandatory header set for the score-as-you-go routes (/next + /discover):
@@ -358,15 +363,15 @@ const orgHeadersOptionalBrand = z.object({
 // (tier-mirrored downstream needing x-user-id + x-run-id) and are always
 // invoked inside a campaign workflow (x-campaign-id required).
 const orgHeadersScoring = z.object({
-  "x-org-id": z.string().uuid(),
+  "x-org-id": uuid(),
   "x-brand-id": z
     .string()
     .describe(
       "Brand UUID(s) for this call. CSV when plural — e.g. `<uuid1>,<uuid2>`. Canonicalized server-side (deduplicated + sorted)."
     ),
-  "x-user-id": z.string().uuid(),
-  "x-run-id": z.string().uuid(),
-  "x-campaign-id": z.string().uuid(),
+  "x-user-id": uuid(),
+  "x-run-id": uuid(),
+  "x-campaign-id": uuid(),
 });
 
 registry.registerPath({
@@ -455,7 +460,7 @@ registry.registerPath({
   request: {
     headers: orgHeaders,
     query: z.object({
-      campaignId: z.string().uuid().optional(),
+      campaignId: uuid().optional(),
       limit: z.coerce.number().int().min(1).optional(),
       offset: z.coerce.number().int().min(0).optional(),
     }),
@@ -482,7 +487,7 @@ registry.registerPath({
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
     headers: orgHeaders,
-    query: z.object({ campaign_id: z.string().uuid().optional() }),
+    query: z.object({ campaign_id: uuid().optional() }),
   },
   responses: {
     200: {
@@ -506,7 +511,7 @@ registry.registerPath({
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
     headers: orgHeaders,
-    params: z.object({ id: z.string().uuid() }),
+    params: z.object({ id: uuid() }),
     body: {
       content: {
         "application/json": { schema: OpportunityReplyRequestSchema },
@@ -578,7 +583,7 @@ registry.registerPath({
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
     headers: orgHeadersOptionalBrand,
-    query: z.object({ campaign_id: z.string().uuid().optional() }),
+    query: z.object({ campaign_id: uuid().optional() }),
   },
   responses: {
     200: {
@@ -597,7 +602,7 @@ registry.registerPath({
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
     headers: orgHeadersOptionalBrand,
-    params: z.object({ id: z.string().uuid() }),
+    params: z.object({ id: uuid() }),
   },
   responses: {
     200: {
@@ -664,7 +669,7 @@ registry.registerPath({
   security: [{ [apiKeyAuth.name]: [] }],
   request: {
     headers: orgHeadersOptionalBrand,
-    params: z.object({ id: z.string().uuid() }),
+    params: z.object({ id: uuid() }),
   },
   responses: {
     200: {

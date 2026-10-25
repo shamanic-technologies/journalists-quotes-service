@@ -12,13 +12,13 @@ import {
 // GET variant of the ranked read: same filter + shape, params from the
 // query string. limit/offset arrive as strings → coerce.
 const OpportunitiesGetQuerySchema = z.object({
-  campaignId: z.string().uuid().optional(),
+  campaignId: z.guid().optional(),
   limit: z.coerce.number().int().min(1).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });
 
 const OpportunityStatsQuerySchema = z.object({
-  campaign_id: z.string().uuid().optional(),
+  campaign_id: z.guid().optional(),
 });
 
 function buildRankedResponse(
